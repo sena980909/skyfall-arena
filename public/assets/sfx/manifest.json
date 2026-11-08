@@ -1,0 +1,16 @@
+{
+ "shoot": "shoot.mp3",
+ "shoot_far": "shoot_far.mp3",
+ "reload": "reload.mp3",
+ "empty": "empty.mp3",
+ "jump": "jump.mp3",
+ "dash": "dash.mp3",
+ "flashbang": "flashbang.mp3",
+ "ult_activate": "ult_activate.mp3",
+ "heal": "heal.mp3",
+ "wave_start": "wave_start.mp3",
+ "wave_clear": "wave_clear.mp3",
+ "death": "death.mp3",
+ "bot_death": "bot_death.mp3",
+ "footstep": "footstep.mp3"
+}

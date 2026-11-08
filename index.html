@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SKYFALL ARENA — M1 Greybox</title>
+  <style>
+    :root {
+      --blue: #2f80ff;
+      --orange: #ff5a2f;
+      --hud: rgba(255, 255, 255, 0.92);
+      --panel: rgba(10, 14, 22, 0.72);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f16; font-family: "Segoe UI", "Malgun Gothic", system-ui, sans-serif; color: var(--hud); user-select: none; }
+    #app { position: fixed; inset: 0; }
+    #app canvas { display: block; width: 100%; height: 100%; }
+
+    /* ---------- HUD ---------- */
+    #hud { position: fixed; inset: 0; pointer-events: none; }
+    #hud.hidden { display: none; }
+    .hud-top { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); text-align: center; }
+    .hud-top .wave { font-size: 22px; font-weight: 700; letter-spacing: 2px; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
+    .hud-top .bots { font-size: 14px; opacity: .85; margin-top: 2px; }
+    .hud-top .rest { font-size: 14px; color: #ffd166; margin-top: 4px; min-height: 18px; }
+
+    .bossbar { margin-top: 10px; width: 420px; }
+    .bossbar.hidden { display: none; }
+    .bossbar .bossname { font-size: 13px; letter-spacing: 3px; color: #ffb27a; margin-bottom: 4px; }
+    .bossbar .bosshp { height: 10px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.3); border-radius: 3px; overflow: hidden; }
+    .bossbar .bosshp .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #ff5a2f, #ffb27a); transition: width .1s linear; }
+    .healnum { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); font-size: 26px; font-weight: 800; color: #4cff88; text-shadow: 0 0 6px #000; animation: dmgnum .9s ease-out forwards; }
+    .hud-tl { position: absolute; top: 18px; left: 18px; width: 320px; }
+    .killfeed div { background: var(--panel); padding: 4px 10px; margin-bottom: 4px; border-left: 3px solid var(--blue); font-size: 13px; border-radius: 3px; animation: fadeout 4s forwards; }
+    .killfeed div.hs { border-left-color: #ffd166; }
+    .killfeed div.death { border-left-color: var(--orange); }
+    @keyframes fadeout { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
+    .hud-tr { position: absolute; top: 18px; right: 18px; text-align: right; }
+    .hud-tr .score { font-size: 24px; font-weight: 700; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
+    .hud-tr .lives { font-size: 14px; opacity: .9; letter-spacing: 2px; }
+
+    .hud-bl { position: absolute; left: 28px; bottom: 28px; display: flex; align-items: flex-end; gap: 14px; }
+    .portrait { width: 64px; height: 64px; border-radius: 8px; background: linear-gradient(135deg, #1b3a7a, var(--blue)); border: 2px solid rgba(255,255,255,.4); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 22px; }
+    .hpwrap { width: 280px; }
+    .hpwrap .name { font-size: 13px; letter-spacing: 3px; opacity: .8; margin-bottom: 4px; }
+    .hpbar { height: 16px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,.25); }
+    .hpbar .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #ffffff, #cfe3ff); transition: width .08s linear; }
+    .hpbar .fill.low { background: linear-gradient(90deg, #ff6a3d, #ff2e2e); }
+    .hptext { font-size: 20px; font-weight: 700; margin-top: 2px; }
+
+    .hud-br { position: absolute; right: 28px; bottom: 28px; text-align: right; }
+    .ammo { font-size: 40px; font-weight: 800; line-height: 1; text-shadow: 0 2px 10px rgba(0,0,0,.7); }
+    .ammo small { font-size: 18px; opacity: .7; font-weight: 600; }
+    .reload { font-size: 13px; color: #ffd166; min-height: 16px; margin-top: 2px; }
+    .skills { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+    .skill { position: relative; width: 56px; height: 56px; border-radius: 6px; background: var(--panel); border: 1px solid rgba(255,255,255,.3); display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; overflow: hidden; }
+    .skill .key { font-size: 10px; opacity: .7; letter-spacing: 1px; }
+    .skill .label { font-size: 12px; font-weight: 700; margin-top: 2px; }
+    .skill .cd { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.22); height: 0%; }
+    .skill.cooling { opacity: .55; }
+    .skill.cooling .label::after { content: attr(data-sec); display: block; font-size: 13px; color: #ffd166; }
+    .skill.ready { border-color: rgba(142,197,255,.9); box-shadow: 0 0 10px rgba(47,128,255,.45); }
+    #flashwhite { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+    #ulttint { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(47,128,255,0) 50%, rgba(47,128,255,.45) 100%); opacity: 0; transition: opacity .3s; pointer-events: none; }
+    .ult.active { border-color: #8ec5ff; color: #8ec5ff; background: rgba(47,128,255,.35); animation: none; }
+
+    .hud-bc { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); text-align: center; }
+    .ult { width: 70px; height: 70px; border-radius: 50%; border: 3px solid rgba(255,255,255,.35); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; background: var(--panel); }
+    .ult.ready { border-color: #ffd166; color: #ffd166; animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { transform: scale(1.08); } }
+
+    /* crosshair */
+    #crosshair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+    #crosshair .dot { position: absolute; left: -1.5px; top: -1.5px; width: 3px; height: 3px; background: #fff; border-radius: 50%; box-shadow: 0 0 2px #000; }
+    #crosshair .l { position: absolute; background: #fff; box-shadow: 0 0 2px #000; }
+    #crosshair .l.n, #crosshair .l.s { width: 2px; height: 9px; left: -1px; }
+    #crosshair .l.e, #crosshair .l.w { height: 2px; width: 9px; top: -1px; }
+    #hitmarker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; opacity: 0; }
+    #hitmarker .l { position: absolute; width: 2px; height: 10px; background: #fff; box-shadow: 0 0 3px #000; }
+    #hitmarker.hs .l { background: #ffd166; }
+    #hitmarker.kill .l { background: var(--orange); }
+    #hitmarker.show { animation: hm .18s ease-out forwards; }
+    @keyframes hm { 0% { opacity: 1; transform: scale(1.3); } 100% { opacity: 0; transform: scale(1); } }
+
+    /* damage indicators */
+    #dmgdir { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+    .dmg-arc { position: absolute; left: -90px; top: -90px; width: 180px; height: 180px; border-radius: 50%; border: 6px solid transparent; border-top-color: rgba(255, 60, 40, .9); opacity: 0; animation: dmgfade .9s forwards; }
+    @keyframes dmgfade { 0% { opacity: 1; } 100% { opacity: 0; } }
+    #vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(255,0,0,0) 55%, rgba(255,0,0,.55) 100%); opacity: 0; transition: opacity .15s; }
+
+    .dmgnum { position: absolute; font-weight: 800; font-size: 18px; color: #fff; text-shadow: 0 0 4px #000, 0 2px 2px #000; transform: translate(-50%, -50%); animation: dmgnum .7s ease-out forwards; }
+    .dmgnum.hs { color: #ffd166; font-size: 22px; }
+    @keyframes dmgnum { 0% { opacity: 1; margin-top: 0; } 100% { opacity: 0; margin-top: -40px; } }
+
+    .botlabel { position: absolute; transform: translate(-50%, -100%); font-size: 11px; background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 3px; color: #ffd166; white-space: nowrap; }
+
+    /* ---------- overlays ---------- */
+    .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: rgba(5, 8, 14, .78); backdrop-filter: blur(4px); z-index: 10; }
+    .overlay.hidden { display: none; }
+    .overlay h1 { font-size: 56px; letter-spacing: 8px; margin: 0 0 6px; font-weight: 900; background: linear-gradient(90deg, #8ec5ff, #ffffff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .overlay h2 { font-size: 36px; letter-spacing: 4px; margin: 0 0 12px; }
+    .overlay .sub { opacity: .75; margin-bottom: 28px; font-size: 14px; letter-spacing: 2px; }
+    .overlay .row { display: flex; gap: 10px; margin-bottom: 20px; }
+    .btn { pointer-events: auto; cursor: pointer; padding: 10px 22px; border-radius: 6px; border: 1px solid rgba(255,255,255,.35); background: rgba(255,255,255,.08); color: #fff; font-size: 15px; letter-spacing: 1px; transition: background .15s, transform .1s; }
+    .btn:hover { background: rgba(255,255,255,.18); transform: translateY(-1px); }
+    .btn.primary { background: var(--blue); border-color: var(--blue); font-weight: 700; padding: 14px 40px; font-size: 18px; }
+    .btn.primary:hover { background: #4a92ff; }
+    .btn.sel { background: rgba(47,128,255,.45); border-color: var(--blue); }
+    .keys { margin-top: 26px; font-size: 13px; opacity: .7; line-height: 1.8; text-align: center; }
+    .keys b { color: #fff; }
+    .stats { display: grid; grid-template-columns: auto auto; gap: 6px 28px; font-size: 15px; margin-bottom: 26px; }
+    .stats span:nth-child(odd) { opacity: .7; }
+    .stats span:nth-child(even) { font-weight: 700; text-align: right; }
+    .countdown { font-size: 72px; font-weight: 900; }
+    .tag { position: fixed; bottom: 10px; right: 14px; font-size: 11px; opacity: .4; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="wave" id="hud-wave">WAVE 1</div>
+      <div class="bots" id="hud-bots">남은 봇 0</div>
+      <div class="rest" id="hud-rest"></div>
+      <div class="bossbar hidden" id="bossbar">
+        <div class="bossname" id="bossname">BOSS</div>
+        <div class="bosshp"><div class="fill" id="bossfill"></div></div>
+      </div>
+    </div>
+    <div class="hud-tl"><div class="killfeed" id="killfeed"></div></div>
+    <div class="hud-tr">
+      <div class="score" id="hud-score">0</div>
+      <div class="lives" id="hud-lives">♥♥♥</div>
+    </div>
+    <div class="hud-bl">
+      <div class="portrait">R</div>
+      <div class="hpwrap">
+        <div class="name">RAVEN</div>
+        <div class="hpbar"><div class="fill" id="hud-hpfill"></div></div>
+        <div class="hptext" id="hud-hp">200</div>
+      </div>
+    </div>
+    <div class="hud-bc"><div class="ult" id="hud-ult">0%</div></div>
+    <div class="hud-br">
+      <div class="ammo"><span id="hud-ammo">30</span> <small>/ 30</small></div>
+      <div class="reload" id="hud-reload"></div>
+      <div class="skills">
+        <div class="skill" id="skill-0"><span class="key">F</span><span class="label">블링크</span><span class="cd"></span></div>
+        <div class="skill" id="skill-1"><span class="key">E</span><span class="label">섬광탄</span><span class="cd"></span></div>
+      </div>
+    </div>
+    <div id="crosshair">
+      <div class="dot"></div>
+      <div class="l n"></div><div class="l s"></div><div class="l e"></div><div class="l w"></div>
+    </div>
+    <div id="hitmarker">
+      <div class="l" style="transform: translate(-9px,-14px) rotate(45deg)"></div>
+      <div class="l" style="transform: translate(7px,-14px) rotate(-45deg)"></div>
+      <div class="l" style="transform: translate(-9px,4px) rotate(-45deg)"></div>
+      <div class="l" style="transform: translate(7px,4px) rotate(45deg)"></div>
+    </div>
+    <div id="dmgdir"></div>
+    <div id="vignette"></div>
+    <div id="flashwhite"></div>
+    <div id="ulttint"></div>
+    <div id="dmgnums"></div>
+    <div id="botlabels"></div>
+  </div>
+
+  <div id="ov-menu" class="overlay">
+    <h1>SKYFALL ARENA</h1>
+    <div class="sub">M1 GREYBOX PROTOTYPE · 웨이브 섬멸전</div>
+    <div class="row" id="difficulty">
+      <button class="btn" data-d="easy">EASY</button>
+      <button class="btn sel" data-d="normal">NORMAL</button>
+      <button class="btn" data-d="hard">HARD</button>
+    </div>
+    <button class="btn primary" id="btn-start">클릭하여 시작</button>
+    <div class="keys">
+      <b>WASD</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프 · <b>좌클릭</b> 사격 · <b>R</b> 재장전<br/>
+      <b>F</b> 블링크 · <b>E</b> 섬광탄 · <b>Q</b> 오버클럭 · <b>F3</b> 봇 디버그 · <b>F8</b> 오토파일럿 · <b>Esc</b> 일시정지
+    </div>
+  </div>
+
+  <div id="ov-pause" class="overlay hidden">
+    <h2>PAUSED</h2>
+    <button class="btn primary" id="btn-resume">클릭하여 계속</button>
+    <div class="keys">마우스가 잠금 해제되었습니다. 계속하려면 클릭하세요.</div>
+  </div>
+
+  <div id="ov-dead" class="overlay hidden">
+    <h2 style="color:#ff5a2f">ELIMINATED</h2>
+    <div class="sub" id="dead-by">처치됨</div>
+    <div class="countdown" id="dead-count">3</div>
+  </div>
+
+  <div id="ov-end" class="overlay hidden">
+    <h2 id="end-title">VICTORY</h2>
+    <div class="sub" id="end-sub"></div>
+    <div class="stats" id="end-stats"></div>
+    <button class="btn primary" id="btn-restart">다시 시작</button>
+  </div>
+
+  <div class="tag">SKYFALL ARENA · M1</div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
