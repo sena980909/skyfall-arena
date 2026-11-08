@@ -105,6 +105,14 @@ console.table(game.waveLog); console.log(game.player.stats);
 GLB 구조 확인: `node tools/glb-info.mjs public/assets/models/*.glb`
 GLB 최적화: `node tools/optimize-glb.mjs` (원본은 `tools/.backup/`에 보관, 새 에셋을 받은 뒤 한 번 실행)
 
+## 배포 (GitHub Pages)
+
+```bash
+npm run deploy:pages
+```
+
+처음 실행 시 공개 저장소 `skyfall-arena`를 만들고 소스를 푸시한 뒤, `dist/`를 `gh-pages` 브랜치로 올리고 Pages 소스를 설정한다. 이후 실행은 빌드·재배포만 한다. Vite `base: './'`라 하위 경로(`/skyfall-arena/`)에서도 에셋 경로가 맞는다.
+
 ## 폴더
 
 ```
