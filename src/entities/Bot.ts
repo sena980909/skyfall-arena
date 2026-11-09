@@ -107,6 +107,13 @@ export class Bot implements Hittable, Healable {
   /** 라이플 홀더(그룹 자식) + 오른손 본: 위치는 손, 방향은 조준 방향 */
   private rifleHolder: Group | null = null;
   private handBone: Object3D | null = null;
+  /** 왼팔 2본 IK (생성 클립들은 왼손이 총을 잡지 않고 옆으로 뻗어 있어, 왼손을 총열덮개에 붙인다) */
+  private ikUpper: Object3D | null = null;
+  private ikFore: Object3D | null = null;
+  private ikHand: Object3D | null = null;
+  private readonly ikV = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+  private readonly ikQ = new Quaternion();
+  private readonly ikQ2 = new Quaternion();
   private rifleKick = 0;
   private stepTimer = 0;
   /** 0 = 총구를 내린 이동 자세(로우레디), 1 = 조준 */
@@ -261,6 +268,9 @@ export class Bot implements Hittable, Healable {
     let hand: Object3D | null = null;
     model.traverse((o) => {
       if (!hand && /right.*hand/i.test(o.name)) hand = o;
+      if (!this.ikUpper && /^left.*arm$/i.test(o.name) && !/fore/i.test(o.name)) this.ikUpper = o;
+      if (!this.ikFore && /^left.*forearm$/i.test(o.name)) this.ikFore = o;
+      if (!this.ikHand && /^left.*hand$/i.test(o.name)) this.ikHand = o;
     });
     if (!hand) return;
     this.handBone = hand;
@@ -293,6 +303,51 @@ export class Bot implements Hittable, Healable {
     this.rifleHolder = holder;
     this.group.add(holder);
     this.updateRifleTransform();
+  }
+
+  /** 월드 회전 q를 본에 적용: L' = Wp⁻¹ · q · Wp · L */
+  private applyWorldRotation(bone: Object3D, q: Quaternion): void {
+    const wp = bone.parent ? bone.parent.getWorldQuaternion(this.ikQ2) : this.ikQ2.identity();
+    const inv = wp.clone().invert();
+    bone.quaternion.premultiply(inv.multiply(q).multiply(wp));
+  }
+
+  /**
+   * 왼팔 2본 IK: 왼손을 총열덮개(홀더 로컬 -Z 0.3m) 위치로. 팔꿈치는 현재 클립의 굽힘 평면을 유지한다.
+   */
+  private solveLeftArmIK(): void {
+    if (!this.rifleHolder || !this.ikUpper || !this.ikFore || !this.ikHand) return;
+    this.group.updateMatrixWorld(true);
+    const [target, a, b, h, u, w] = this.ikV;
+    target.set(0.0, -0.03, -0.3);
+    this.rifleHolder.localToWorld(target);
+    this.ikUpper.getWorldPosition(a);
+    this.ikFore.getWorldPosition(b);
+    this.ikHand.getWorldPosition(h);
+    const l1 = a.distanceTo(b);
+    const l2 = b.distanceTo(h);
+    if (l1 < 1e-4 || l2 < 1e-4) return;
+    const d = Math.min(l1 + l2 - 0.01, Math.max(0.05, a.distanceTo(target)));
+    // 팔꿈치 각: 코사인 법칙
+    const cosD = Math.max(-1, Math.min(1, (l1 * l1 + l2 * l2 - d * d) / (2 * l1 * l2)));
+    const thetaD = Math.acos(cosD);
+    u.copy(a).sub(b).normalize();
+    w.copy(h).sub(b).normalize();
+    const thetaC = Math.acos(Math.max(-1, Math.min(1, u.dot(w))));
+    const axis = this.tmp3.crossVectors(w, u);
+    if (axis.lengthSq() > 1e-8) {
+      axis.normalize();
+      this.ikQ.setFromAxisAngle(axis, thetaC - thetaD);
+      this.applyWorldRotation(this.ikFore, this.ikQ);
+      this.ikFore.updateMatrixWorld(true);
+    }
+    // 어깨: 손이 목표 방향을 향하도록
+    this.ikHand.getWorldPosition(h);
+    u.copy(h).sub(a).normalize();
+    w.copy(target).sub(a).normalize();
+    this.ikQ.setFromUnitVectors(u, w);
+    this.applyWorldRotation(this.ikUpper, this.ikQ);
+    this.ikUpper.updateMatrixWorld(true);
   }
 
   /**
@@ -375,16 +430,14 @@ export class Bot implements Hittable, Healable {
     const lat = Math.cos(this.facingYaw) * this.velocity.x - Math.sin(this.facingYaw) * this.velocity.z;
 
     if (speed < 0.5) {
-      if (shooting && this.actions.aim) {
-        this.playAnim('aim', 0.1);
-        this.actions.aim.timeScale = 1;
-      } else if (shooting && this.actions.shoot) {
+      // 생성된 aim 클립은 재생 중 상체가 130° 이상 돌아가(등을 보임) 쓰지 않는다. 정지 사격·조준 대기 모두 shoot 클립(40° 블레이드 자세) 사용
+      if (shooting && this.actions.shoot) {
         this.playAnim('shoot', 0.1);
-        this.actions.shoot.timeScale = 0.25;
-      } else if (this.rifleMuzzle && this.actions.aim) {
-        // 라이플을 든 대기: 팔을 내린 기본 idle 대신 조준 자세를 아주 느리게 재생 (총이 옆으로 뻗지 않음)
-        this.playAnim('aim', 0.2);
-        this.actions.aim.timeScale = 0.12;
+        this.actions.shoot.timeScale = 1;
+      } else if (this.rifleMuzzle && this.actions.shoot) {
+        // 라이플을 든 대기: 팔을 내린 기본 idle 대신 사격 자세를 아주 느리게 재생
+        this.playAnim('shoot', 0.2);
+        this.actions.shoot.timeScale = 0.12;
       } else if (this.actions.idle) this.playAnim('idle');
     } else if (Math.abs(lat) > Math.abs(fwd) * 1.2 && this.actions.strafe) {
       this.playAnim('strafe', 0.12);
@@ -400,6 +453,7 @@ export class Bot implements Hittable, Healable {
     this.mixer.update(dt);
     this.group.updateMatrixWorld(true);
     this.updateRifleTransform(dt, speed);
+    this.solveLeftArmIK();
     if (speed > 1.0 && this.ctrl.onGround) {
       this.stepTimer += dt * speed;
       if (this.stepTimer > 2.2) {
