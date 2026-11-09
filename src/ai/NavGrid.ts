@@ -138,15 +138,21 @@ export class NavGrid {
     return null;
   }
 
-  private nearestWalkable(i: number, j: number): [number, number] {
+  /**
+   * 가장 가까운 걷기 가능 셀. y가 주어지면 에이전트가 실제로 서 있는 높이(±0.9m)의 셀을 우선한다.
+   * 플랫폼 가장자리에 반쯤 걸쳐 선 봇을 지면 셀로 잡으면 난간 너머로 가라는 경로가 나와 영원히 끼인다.
+   */
+  private nearestWalkable(i: number, j: number, y?: number): [number, number] {
     const ok = (a: number, b: number): boolean => this.isReachable(a, b);
-    if (ok(i, j)) return [i, j];
+    const okH = (a: number, b: number): boolean => ok(a, b) && (y === undefined || Math.abs(this.heightAt(a, b) - y) <= 0.9);
+    if (okH(i, j)) return [i, j];
     for (let r = 1; r < 12; r++) {
       for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
         if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
-        if (ok(i + di, j + dj)) return [i + di, j + dj];
+        if (okH(i + di, j + dj)) return [i + di, j + dj];
       }
     }
+    if (y !== undefined) return this.nearestWalkable(i, j);
     return [i, j];
   }
 
@@ -177,8 +183,8 @@ export class NavGrid {
   findPath(from: Vector3, to: Vector3): Vector3[] {
     const [si0, sj0] = this.toCell(from);
     const [gi0, gj0] = this.toCell(to);
-    const [si, sj] = this.nearestWalkable(si0, sj0);
-    const [gi, gj] = this.nearestWalkable(gi0, gj0);
+    const [si, sj] = this.nearestWalkable(si0, sj0, from.y);
+    const [gi, gj] = this.nearestWalkable(gi0, gj0, to.y);
     const start = sj * this.w + si;
     const goal = gj * this.w + gi;
     if (start === goal) return [this.toWorld(gi, gj)];
@@ -283,6 +289,39 @@ export class NavGrid {
       }
       out.push(this.toWorld(cells[far][0], cells[far][1]));
       anchor = far;
+    }
+    // 낙하 노드(아래층)는 가장자리 너머로 0.6m 밀어낸다. 에이전트 캡슐이 가장자리에 걸친 채
+    // "노드 바로 위"에서 제자리 떨림만 하다 끝나는 것을 막는다.
+    let prev = this.toWorld(cells[0][0], cells[0][1]);
+    for (let k = 0; k < out.length; k++) {
+      const node = out[k];
+      if (node.y < prev.y - STEP_UP) {
+        const dx = node.x - prev.x;
+        const dz = node.z - prev.z;
+        let len = Math.hypot(dx, dz);
+        let ux = 0, uz = 0;
+        if (len > 1e-3) { ux = dx / len; uz = dz / len; }
+        else {
+          // 바로 아래면: 이웃 중 가장 높은 셀(플랫폼)에서 멀어지는 방향
+          const [ni, nj] = this.toCell(node);
+          let best = -Infinity, bi = 0, bj = 0;
+          for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+            if (!di && !dj) continue;
+            const h = this.heightAt(ni + di, nj + dj);
+            if (h > best) { best = h; bi = di; bj = dj; }
+          }
+          len = Math.hypot(bi, bj) || 1;
+          ux = -bi / len; uz = -bj / len;
+        }
+        const px = node.x + ux * 0.6;
+        const pz = node.z + uz * 0.6;
+        const [pi, pj] = this.toCell(new Vector3(px, 0, pz));
+        if (this.isReachable(pi, pj) && Math.abs(this.heightAt(pi, pj) - node.y) < 0.6) {
+          node.x = px;
+          node.z = pz;
+        }
+      }
+      prev = node;
     }
     return out;
   }

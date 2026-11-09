@@ -76,6 +76,8 @@ export class Bot implements Hittable, Healable {
   private strafeDir = 1;
   private nextStrafeFlip = 0;
   private stuckTimer = 0;
+  /** 경로 추종 중 누적 끼임 시간: 반복되면 근처 지점으로 우회 */
+  private stuckAccum = 0;
   private patrolTarget: Vector3 | null = null;
   private readonly moveDir = new Vector3(0, 0, 1);
   // 엄폐
@@ -689,6 +691,7 @@ export class Bot implements Hittable, Healable {
   private onReloadStarted(): void {
     const d = this.ctx.difficulty;
     if (this.state !== 'combat' || this.mode !== 'engage') return;
+    if (this.ctrl.pos.distanceTo(this.ctx.player.position) > ENGAGE_MAX * 1.3) return;
     if (d.cover === 'always' || (d.cover === 'lowhp' && this.hp / this.maxHp < 0.5)) this.tryCover();
   }
 
@@ -737,23 +740,44 @@ export class Bot implements Hittable, Healable {
     }
     const target = this.path[this.pathIdx];
     const dir = this.tmp.copy(target).sub(this.ctrl.pos).setY(0);
-    const dist = dir.length();
-    if (dist < 0.5) {
+    let dist = dir.length();
+    const dy = target.y - this.ctrl.pos.y;
+    // 낙하 노드(아래층)는 실제로 내려간 뒤에만 도착 처리. 수평 거리만 보면 가장자리에 걸친 채 다음 노드로 넘어가 끼인다
+    if (dist < 0.5 && Math.abs(dy) < 1.0) {
       this.pathIdx++;
       return this.pathArrived();
     }
-    dir.divideScalar(dist);
+    if (dist < 1e-3) dir.set(this.moveDir.x, 0, this.moveDir.z);
+    else dir.divideScalar(dist);
+    // 낙하 중이면 캡슐 반지름만큼 더 바깥을 향해 가장자리를 확실히 넘는다
+    if (dy < -0.8) dist = Math.max(dist, 0.6);
     this.moveDir.copy(dir);
     this.wish.copy(dir).multiplyScalar(speed);
     const moved = this.ctrl.moveAndSlide(dt, this.wish);
     if (moved < speed * dt * 0.25 && this.ctrl.onGround) {
       this.stuckTimer += dt;
-      if (this.stuckTimer > 0.5) {
+      // 거의 완전히 멈춘 프레임만 누적 (낙하·착지·회전 중 느린 프레임은 제외)
+      if (moved < speed * dt * 0.1) this.stuckAccum += dt;
+      if (this.stuckAccum > 2.2) {
+        // 반복 끼임(난간·모서리): 같은 높이의 근처 지점으로 우회 경로를 새로 잡는다
+        this.stuckAccum = 0;
+        this.stuckTimer = 0;
+        const detour = this.ctx.nav.randomWalkableNear(this.ctrl.pos, 5, 40);
+        if (detour && Math.abs(detour.y - this.ctrl.pos.y) < 1) {
+          this.path = this.ctx.nav.findPath(this.ctrl.pos, detour);
+          this.pathIdx = 0;
+          this.nextRepath = this.ctx.now + 1.5;
+          this.updateDebugLine();
+        } else this.nextRepath = 0;
+      } else if (this.stuckTimer > 0.5) {
         this.nextRepath = 0;
         this.stuckTimer = 0;
         this.ctrl.moveAndSlide(dt, this.wish.set(-dir.z, 0, dir.x).multiplyScalar(speed));
       }
-    } else this.stuckTimer = 0;
+    } else {
+      this.stuckTimer = 0;
+      if (moved > speed * dt * 0.5) this.stuckAccum = 0;
+    }
     return false;
   }
 
@@ -788,11 +812,13 @@ export class Bot implements Hittable, Healable {
           this.enter(alert ? 'chase' : 'patrol');
           return;
         }
-        // 버스트 종료 → 엄폐 판단
+        // 버스트 종료 → 엄폐 판단. 단, 플레이어가 교전 거리 밖이면 엄폐 대신 접근한다
+        // (멀리서 숨었다 쏘기를 반복하면 서로 못 맞히는 교착이 생긴다)
         if (this.burstJustEnded) {
           this.burstJustEnded = false;
           const d = ctx.difficulty;
-          if (d.cover === 'always' || (d.cover === 'lowhp' && this.hp / this.maxHp < 0.5)) {
+          const farAway = this.ctrl.pos.distanceTo(ctx.player.position) > ENGAGE_MAX * 1.3;
+          if (!farAway && (d.cover === 'always' || (d.cover === 'lowhp' && this.hp / this.maxHp < 0.5))) {
             if (this.tryCover()) return;
           }
         }

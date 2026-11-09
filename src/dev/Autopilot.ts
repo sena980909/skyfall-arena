@@ -149,7 +149,8 @@ export class Autopilot implements PlayerInput {
   /** 시점을 목표 방향으로 사람처럼 회전시키고, 각도 오차를 반환 (deg) */
   private aimAt(point: Vector3, dt: number, eye: Vector3): number {
     const p = this.ctx.player;
-    const dir = this.tmp2.copy(point).sub(eye);
+    // 주의: 호출자가 eye로 tmp2를 넘기므로 여기서는 별도 벡터를 쓴다 (같은 벡터면 dir=0 → atan2(-0,-0)=-π로 항상 +z를 본다)
+    const dir = this.aimV.copy(point).sub(eye);
     const dist = dir.length();
     dir.divideScalar(dist || 1);
     const desiredYaw = Math.atan2(-dir.x, -dir.z);
