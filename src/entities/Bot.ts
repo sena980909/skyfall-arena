@@ -114,6 +114,10 @@ export class Bot implements Hittable, Healable {
   private readonly ikV = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
   private readonly ikQ = new Quaternion();
   private readonly ikQ2 = new Quaternion();
+  /** 견장·전완 장갑 확대용 본 (생성 모델은 컨셉/1인칭 팔보다 어깨·전완이 작게 나왔다) */
+  private readonly bulkBones: { sh: Object3D; arm: Object3D; fore: Object3D; hand: Object3D }[] = [];
+  private static readonly BULK_SHOULDER = 1.35;
+  private static readonly BULK_FOREARM = 1.3;
   private rifleKick = 0;
   private stepTimer = 0;
   /** 0 = 총구를 내린 이동 자세(로우레디), 1 = 조준 */
@@ -272,6 +276,16 @@ export class Bot implements Hittable, Healable {
       if (!this.ikFore && /^left.*forearm$/i.test(o.name)) this.ikFore = o;
       if (!this.ikHand && /^left.*hand$/i.test(o.name)) this.ikHand = o;
     });
+    for (const side of ['Left', 'Right']) {
+      let sh: Object3D | null = null, arm: Object3D | null = null, fore: Object3D | null = null, hd: Object3D | null = null;
+      model.traverse((o) => {
+        if (o.name === `${side}Shoulder`) sh = o;
+        else if (o.name === `${side}Arm`) arm = o;
+        else if (o.name === `${side}ForeArm`) fore = o;
+        else if (o.name === `${side}Hand`) hd = o;
+      });
+      if (sh && arm && fore && hd) this.bulkBones.push({ sh, arm, fore, hand: hd });
+    }
     if (!hand) return;
     this.handBone = hand;
     const { group: holder, muzzle } = buildAlignedGun(rifleSrc, 0.78);
@@ -303,6 +317,21 @@ export class Bot implements Hittable, Healable {
     this.rifleHolder = holder;
     this.group.add(holder);
     this.updateRifleTransform();
+  }
+
+  /**
+   * 견장·전완 장갑 확대: 어깨 본을 키우고 상완 본을 역스케일(팔 길이 유지), 전완은 두께만 키우고 손을 역스케일.
+   * 클립의 scale 트랙이 매 프레임 본 스케일을 덮어쓰므로 믹서 갱신 직후 매번 적용한다.
+   */
+  private applyArmorBulk(): void {
+    const S = Bot.BULK_SHOULDER;
+    const F = Bot.BULK_FOREARM;
+    for (const b of this.bulkBones) {
+      b.sh.scale.set(S, S, S);
+      b.arm.scale.set(1 / S, 1 / S, 1 / S);
+      b.fore.scale.set(F, 1, F);
+      b.hand.scale.set(1 / F, 1, 1 / F);
+    }
   }
 
   /** 월드 회전 q를 본에 적용: L' = Wp⁻¹ · q · Wp · L */
@@ -452,6 +481,7 @@ export class Bot implements Hittable, Healable {
     }
     this.mixer.update(dt);
     this.group.updateMatrixWorld(true);
+    this.applyArmorBulk();
     this.updateRifleTransform(dt, speed);
     this.solveLeftArmIK();
     if (speed > 1.0 && this.ctrl.onGround) {
@@ -558,7 +588,10 @@ export class Bot implements Hittable, Healable {
     this.group.quaternion.copy(this.tmpQ).multiply(this.tmpQ2);
     // 넘어지며 발이 바닥에 붙은 채 몸이 내려가도록 약간 가라앉힘
     this.group.position.y = this.ctrl.pos.y - 0.06 * k;
-    if (this.mixer && this.fallT < 0.3) this.mixer.update(dt);
+    if (this.mixer && this.fallT < 0.3) {
+      this.mixer.update(dt);
+      this.applyArmorBulk();
+    }
     if (this.fallT >= Bot.FALL_DUR + Bot.LIE_DUR) {
       this.fallT = -1;
       this.ctx.fx.dissolve(this.group, this.isBoss ? 1.2 : 0.6);
