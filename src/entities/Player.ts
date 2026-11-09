@@ -446,12 +446,13 @@ export class Player implements Hittable, Healable {
     const air = this.ctrl.onGround ? 0 : clamp(-this.ctrl.vel.y * 0.004, -0.035, 0.035);
     const reloadDip = this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
 
-    vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03;
-    vm.position.y = this.vmBase.y + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.12 - sb * 0.04;
-    vm.position.z = this.vmBase.z + this.recoil * 0.07 + this.rocketKick * 0.12 + sb * 0.03;
-    vm.rotation.x = this.recoil * 0.12 + this.rocketKick * 0.3 + reloadDip * 0.5 + this.swayY - sb * 0.14 - this.landKick * 1.2;
-    vm.rotation.y = this.swayX + sb * 0.28;
-    vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.22 + sb * 0.18;
+    // 재장전: 총구를 살짝 내리고 몸쪽으로 당기며 안쪽으로 굴린다 (위로 들면 카메라 앞 전완 절단면이 화면에 올라온다)
+    vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03 + reloadDip * 0.04;
+    vm.position.y = this.vmBase.y + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.02 - sb * 0.04;
+    vm.position.z = this.vmBase.z + this.recoil * 0.07 + this.rocketKick * 0.12 + sb * 0.03 + reloadDip * 0.05;
+    vm.rotation.x = this.recoil * 0.12 + this.rocketKick * 0.3 + reloadDip * 0.0 + this.swayY - sb * 0.14 - this.landKick * 1.2;
+    vm.rotation.y = this.swayX + sb * 0.28 + reloadDip * 0.14;
+    vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.35 + sb * 0.18;
   }
 
   // ---------- 스킬 ----------
