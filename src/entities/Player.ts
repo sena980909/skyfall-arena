@@ -10,6 +10,7 @@ import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type H
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';
 import { buildAlignedGun } from '@/render/GunAlign';
+import { buildFpArms } from '@/render/FpArms';
 import { angleBetweenDeg, clamp, DEG2RAD, jitterDirection } from '@/core/MathUtil';
 import type { PlayerInput } from '@/core/PlayerInput';
 import type { GameContext } from '@/core/Context';
@@ -51,6 +52,7 @@ export class Player implements Hittable, Healable {
   readonly viewmodel = new Group();
   private readonly muzzle = new Object3D();
   private readonly coreMat: MeshStandardMaterial;
+  private arms: Group | null = null;
   hp = RAVEN.hp;
   alive = true;
   invulnUntil = 0;
@@ -151,6 +153,9 @@ export class Player implements Hittable, Healable {
     this.viewmodel.remove(this.muzzle);
     holder.add(this.muzzle);
     this.muzzle.position.copy(muzzle);
+    // 1인칭 팔: 오른손 손잡이, 왼손 총열 아래
+    this.arms = buildFpArms();
+    holder.add(this.arms);
     this.viewmodel.traverse((o) => {
       o.layers.set(Player.VIEWMODEL_LAYER);
       const m = o as Mesh;
