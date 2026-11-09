@@ -152,6 +152,7 @@ export class Game {
       }
       this.map.applyTextures(a.floor, a.container);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
+      if (a.rifle && a.raven) this.player.applyCharacterArms(a.raven);
       this.fx.setTextures(a.vfx);
       this.warmupShaders(a);
       const clips = await this.sfx.loadBank(ASSET_BASE, this.camera);

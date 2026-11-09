@@ -10,7 +10,8 @@ import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type H
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';
 import { buildAlignedGun } from '@/render/GunAlign';
-import { buildFpArms } from '@/render/FpArms';
+import { FpRig } from '@/render/FpRig';
+import type { CharacterAsset } from '@/core/Assets';
 import { angleBetweenDeg, clamp, DEG2RAD, jitterDirection } from '@/core/MathUtil';
 import type { PlayerInput } from '@/core/PlayerInput';
 import type { GameContext } from '@/core/Context';
@@ -52,7 +53,10 @@ export class Player implements Hittable, Healable {
   readonly viewmodel = new Group();
   private readonly muzzle = new Object3D();
   private readonly coreMat: MeshStandardMaterial;
-  private arms: Group | null = null;
+  /** 캐릭터 팔 리그 (레이븐 모델 재사용). 없으면 총만 있는 뷰모델 */
+  rig: FpRig | null = null;
+  private rifleHolder: Group | null = null;
+  private rifleObj: Object3D | null = null;
   hp = RAVEN.hp;
   alive = true;
   invulnUntil = 0;
@@ -153,9 +157,35 @@ export class Player implements Hittable, Healable {
     this.viewmodel.remove(this.muzzle);
     holder.add(this.muzzle);
     this.muzzle.position.copy(muzzle);
-    // 1인칭 팔: 오른손 손잡이, 왼손 총열 아래
-    this.arms = buildFpArms();
-    holder.add(this.arms);
+    this.rifleHolder = holder;
+    this.rifleObj = holder.children[0];
+    this.viewmodel.traverse((o) => {
+      o.layers.set(Player.VIEWMODEL_LAYER);
+      const m = o as Mesh;
+      if (m.isMesh) {
+        m.castShadow = false;
+        m.receiveShadow = false;
+      }
+    });
+  }
+
+  /**
+   * 레이븐 캐릭터 모델의 팔을 1인칭 팔로 사용. 총 홀더를 리그로 옮겨 오른손에 따라가게 한다.
+   * 리그가 켜지면 viewmodel 그룹은 카메라 원점 기준 모션 오프셋만 담당한다.
+   */
+  applyCharacterArms(asset: CharacterAsset): void {
+    if (!this.rifleHolder || !this.rifleObj) return;
+    const rig = new FpRig(asset, Player.VIEWMODEL_LAYER);
+    // 총 길이를 캐릭터 손 크기에 맞춰 키운다 (봇과 동일 0.78m)
+    const scaleUp = 0.78 / 0.62;
+    this.rifleHolder.scale.setScalar(scaleUp);
+    this.rifleHolder.position.set(0, 0, 0);
+    this.rifleHolder.rotation.set(0, 0, 0);
+    this.viewmodel.remove(this.rifleHolder);
+    rig.attachGun(this.rifleHolder, this.rifleObj);
+    this.viewmodel.add(rig.root);
+    this.viewmodel.position.set(0, 0, 0);
+    this.rig = rig;
     this.viewmodel.traverse((o) => {
       o.layers.set(Player.VIEWMODEL_LAYER);
       const m = o as Mesh;
@@ -347,6 +377,17 @@ export class Player implements Hittable, Healable {
     const air = this.ctrl.onGround ? 0 : clamp(-this.ctrl.vel.y * 0.004, -0.035, 0.035);
     const reloadDip = this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
 
+    if (this.rig) {
+      // 캐릭터 팔 리그: 카메라 원점 기준. 달리기 자세는 클립이 담당하므로 회전 블렌드는 약하게
+      vm.position.x = bx * 0.7 + this.swayX * 0.2;
+      vm.position.y = by * 0.7 + breathe + air - this.landKick * 0.6 - reloadDip * 0.1;
+      vm.position.z = this.recoil * 0.05 + this.rocketKick * 0.09;
+      vm.rotation.x = this.recoil * 0.08 + this.rocketKick * 0.2 + reloadDip * 0.35 + this.swayY - this.landKick * 0.9;
+      vm.rotation.y = this.swayX;
+      vm.rotation.z = bRoll * 0.6 + this.strafeTilt * 0.7 + reloadDip * 0.15;
+      this.rig.update(dt, sb, this.recoil > 0.2 || this.rocketKick > 0.2);
+      return;
+    }
     vm.position.x = 0.32 + bx + this.swayX * 0.25 - sb * 0.05;
     vm.position.y = -0.28 + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.12 - sb * 0.07;
     vm.position.z = -0.55 + this.recoil * 0.07 + this.rocketKick * 0.12 + sb * 0.04;
