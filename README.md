@@ -3,6 +3,8 @@
 웹 브라우저용 영웅 기반 하이퍼 FPS. 싱글 플레이, AI 봇 웨이브 섬멸전.
 기획은 [GDD.md](GDD.md) 참고.
 
+**플레이:** https://sena980909.github.io/skyfall-arena/  (GitHub Pages, 데스크톱 Chrome/Edge 권장)
+
 ## 실행
 
 ```bash
