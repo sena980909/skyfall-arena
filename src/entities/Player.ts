@@ -10,6 +10,7 @@ import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type H
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';
 import { buildAlignedGun } from '@/render/GunAlign';
+import { addArmSleeves, collectLocalPoints } from '@/render/ArmSleeves';
 import { angleBetweenDeg, clamp, DEG2RAD, jitterDirection } from '@/core/MathUtil';
 import type { PlayerInput } from '@/core/PlayerInput';
 import type { GameContext } from '@/core/Context';
@@ -35,9 +36,9 @@ const FP_ARMS_LENGTH = 0.92;
 /** 홀더(모델 중심) 위치: 팔 절단면이 카메라 아래쪽 바깥, 총구가 약 1.1m 앞 */
 const FP_ARMS_OFFSET = new Vector3(0.0, 0.0, -0.8);
 /** x: 총열 피치, y: 요, z: 롤 — 모델 Y업을 믿으므로 롤은 0 */
-const FP_ARMS_ROT = new Vector3(0.04, 0.06, 0.0);
+const FP_ARMS_ROT = new Vector3(0.12, 0.06, 0.0);
 /** 일체형 뷰모델일 때 뷰모델 그룹 기준 위치 (양팔이라 중앙에 가깝고 낮게) */
-const FP_ARMS_VM_BASE = new Vector3(0.2, -0.33, -0.1);
+const FP_ARMS_VM_BASE = new Vector3(0.2, -0.24, -0.1);
 
 const emptyStats = (): PlayerStats => ({ shots: 0, hits: 0, headshots: 0, kills: 0, deaths: 0, streak: 0, maxStreak: 0, rockets: 0, fields: 0, ults: 0, damageTaken: 0 });
 
@@ -196,6 +197,12 @@ export class Player implements Hittable, Healable {
     holder.rotation.set(FP_ARMS_ROT.x, FP_ARMS_ROT.y, FP_ARMS_ROT.z);
     this.vmBase.copy(FP_ARMS_VM_BASE);
     this.viewmodel.add(holder);
+    // 전완 절단면 → 어깨(카메라 아래·뒤 양쪽) 방향으로 상완을 이어 붙여 팔이 화면 밖으로 자연스럽게 빠져나가게
+    this.viewmodel.position.copy(this.vmBase);
+    this.viewmodel.rotation.set(0, 0, 0);
+    this.camera.updateMatrixWorld(true);
+    const shoulder = (x: number) => holder.worldToLocal(this.camera.localToWorld(new Vector3(x, -0.42, 0.3)));
+    addArmSleeves(holder, collectLocalPoints(holder), { shoulders: [shoulder(-0.26), shoulder(0.26)] });
     this.muzzle.parent?.remove(this.muzzle);
     holder.add(this.muzzle);
     this.muzzle.position.copy(muzzle);
