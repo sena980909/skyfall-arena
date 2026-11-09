@@ -25,6 +25,8 @@ export interface LoadedAssets {
   container: Texture | null;
   raven: CharacterAsset | null;
   rifle: Group | null;
+  /** 1인칭 팔+라이플 일체형 뷰모델 (힉스필드 생성). 없으면 라이플 단독 뷰모델 */
+  fpArms: Group | null;
   vfx: VfxTextures;
 }
 
@@ -100,9 +102,10 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const [ravenBase, rifleGltf, ...clipGltfs] = await Promise.all([
+  const [ravenBase, rifleGltf, fpArmsGltf, ...clipGltfs] = await Promise.all([
     loadGltf(gl, BASE + 'models/raven.glb'),
     loadGltf(gl, BASE + 'models/pulse_rifle.glb'),
+    loadGltf(gl, BASE + 'models/fp_arms.glb'),
     ...Object.values(RAVEN_CLIPS).map((f) => loadGltf(gl, BASE + f)),
   ]);
 
@@ -132,6 +135,7 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
 
   const rifle = rifleGltf ? rifleGltf.scene : null;
   rifle?.traverse((o) => (o.castShadow = true));
+  const fpArms = fpArmsGltf ? fpArmsGltf.scene : null;
 
-  return { sky, floor, container, raven, rifle, vfx: { muzzle, bolt, impact, flashBurst } };
+  return { sky, floor, container, raven, rifle, fpArms, vfx: { muzzle, bolt, impact, flashBurst } };
 }

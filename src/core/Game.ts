@@ -24,6 +24,7 @@ import type { Hittable } from '@/combat/Hitscan';
 type GameState = 'menu' | 'playing' | 'paused' | 'dead' | 'ended';
 
 const FIXED_DT = 1 / 60;
+/** 뷰모델(총·팔) 전용 수직 FOV */
 
 export class Game {
   private readonly renderer: WebGLRenderer;
@@ -152,7 +153,7 @@ export class Game {
       }
       this.map.applyTextures(a.floor, a.container);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
-      if (a.rifle && a.raven) this.player.applyCharacterArms(a.raven);
+      if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
       this.fx.setTextures(a.vfx);
       this.warmupShaders(a);
       const clips = await this.sfx.loadBank(ASSET_BASE, this.camera);
@@ -350,9 +351,15 @@ export class Game {
     this.scene.background = null;
     r.autoClear = false;
     r.clearDepth();
+    // 뷰모델 전용 FOV: 가까운 총·팔의 원근 왜곡을 줄인다 (일반 FPS 관례)
+    const worldFov = this.camera.fov;
+    this.camera.fov = Player.VIEWMODEL_FOV;
+    this.camera.updateProjectionMatrix();
     this.camera.layers.set(Player.VIEWMODEL_LAYER);
     r.render(this.scene, this.camera);
     this.camera.layers.set(0);
+    this.camera.fov = worldFov;
+    this.camera.updateProjectionMatrix();
     this.scene.background = bg;
     r.autoClear = true;
   }

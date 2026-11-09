@@ -54,6 +54,7 @@ const targets = process.argv.slice(2);
 const all = targets.length === 0;
 if (all || targets.includes('raven')) await optimizeTextured(join(DIR, 'raven.glb'), 1024);
 if (all || targets.includes('rifle')) await optimizeTextured(join(DIR, 'pulse_rifle.glb'), 1024);
+if (all || targets.includes('fparms')) await optimizeTextured(join(DIR, 'fp_arms.glb'), 1024);
 if (all || targets.includes('anim')) {
   for (const n of ['idle', 'run', 'shoot', 'death', 'strafe', 'aim']) await stripToAnimation(join(DIR, `raven_${n}.glb`));
 }

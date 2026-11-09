@@ -1,6 +1,6 @@
 import {
   Box3, BoxGeometry, CapsuleGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera,
-  SphereGeometry, Vector3,
+  SphereGeometry, Vector3, MathUtils,
 } from 'three';
 import { CharacterController } from './CharacterController';
 import { Weapon } from '@/combat/Weapon';
@@ -10,8 +10,6 @@ import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type H
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';
 import { buildAlignedGun } from '@/render/GunAlign';
-import { FpRig } from '@/render/FpRig';
-import type { CharacterAsset } from '@/core/Assets';
 import { angleBetweenDeg, clamp, DEG2RAD, jitterDirection } from '@/core/MathUtil';
 import type { PlayerInput } from '@/core/PlayerInput';
 import type { GameContext } from '@/core/Context';
@@ -31,6 +29,15 @@ export interface PlayerStats {
   ults: number;
   damageTaken: number;
 }
+
+/** 1인칭 팔+총 일체형 모델 배치 (뷰모델 로컬). 스크린샷으로 튜닝 */
+const FP_ARMS_LENGTH = 0.92;
+/** 홀더(모델 중심) 위치: 팔 절단면이 카메라 아래쪽 바깥, 총구가 약 1.1m 앞 */
+const FP_ARMS_OFFSET = new Vector3(0.0, 0.0, -0.76);
+/** x<0: 총구 아래로, y>0: 총구를 화면 중앙(왼쪽)으로 */
+const FP_ARMS_ROT = new Vector3(-0.12, 0.22, 0.05);
+/** 일체형 뷰모델일 때 뷰모델 그룹 기준 위치 (양팔이라 중앙에 가깝고 낮게) */
+const FP_ARMS_VM_BASE = new Vector3(0.21, -0.33, -0.15);
 
 const emptyStats = (): PlayerStats => ({ shots: 0, hits: 0, headshots: 0, kills: 0, deaths: 0, streak: 0, maxStreak: 0, rockets: 0, fields: 0, ults: 0, damageTaken: 0 });
 
@@ -53,10 +60,9 @@ export class Player implements Hittable, Healable {
   readonly viewmodel = new Group();
   private readonly muzzle = new Object3D();
   private readonly coreMat: MeshStandardMaterial;
-  /** 캐릭터 팔 리그 (레이븐 모델 재사용). 없으면 총만 있는 뷰모델 */
-  rig: FpRig | null = null;
   private rifleHolder: Group | null = null;
-  private rifleObj: Object3D | null = null;
+  /** 뷰모델 그룹 기준 위치 (모션 오프셋이 더해진다) */
+  private readonly vmBase = new Vector3(0.32, -0.28, -0.55);
   hp = RAVEN.hp;
   alive = true;
   invulnUntil = 0;
@@ -90,6 +96,8 @@ export class Player implements Hittable, Healable {
   sprinting = false;
   /** 뷰모델 전용 렌더 레이어 (벽 뚫림 방지용 2패스) */
   static readonly VIEWMODEL_LAYER = 1;
+  /** 뷰모델 전용 FOV(월드 FOV와 분리해 팔·총이 과장되지 않게) */
+  static readonly VIEWMODEL_FOV = 56;
   private readonly eyeHeight = 1.6;
   private readonly bodyHit: Mesh;
   private readonly headHit: Mesh;
@@ -158,7 +166,6 @@ export class Player implements Hittable, Healable {
     holder.add(this.muzzle);
     this.muzzle.position.copy(muzzle);
     this.rifleHolder = holder;
-    this.rifleObj = holder.children[0];
     this.viewmodel.traverse((o) => {
       o.layers.set(Player.VIEWMODEL_LAYER);
       const m = o as Mesh;
@@ -170,22 +177,21 @@ export class Player implements Hittable, Healable {
   }
 
   /**
-   * 레이븐 캐릭터 모델의 팔을 1인칭 팔로 사용. 총 홀더를 리그로 옮겨 오른손에 따라가게 한다.
-   * 리그가 켜지면 viewmodel 그룹은 카메라 원점 기준 모션 오프셋만 담당한다.
+   * 힉스필드 생성 1인칭 팔+라이플 일체형 모델로 뷰모델 교체.
+   * 주축 정렬(총열 -Z, 위 +Y) 후 총구는 맨 앞 지점. 라이플 단독 뷰모델은 숨긴다.
    */
-  applyCharacterArms(asset: CharacterAsset): void {
-    if (!this.rifleHolder || !this.rifleObj) return;
-    const rig = new FpRig(asset, Player.VIEWMODEL_LAYER);
-    // 총 길이를 캐릭터 손 크기에 맞춰 키운다 (봇과 동일 0.78m)
-    const scaleUp = 0.78 / 0.62;
-    this.rifleHolder.scale.setScalar(scaleUp);
-    this.rifleHolder.position.set(0, 0, 0);
-    this.rifleHolder.rotation.set(0, 0, 0);
-    this.viewmodel.remove(this.rifleHolder);
-    rig.attachGun(this.rifleHolder, this.rifleObj);
-    this.viewmodel.add(rig.root);
-    this.viewmodel.position.set(0, 0, 0);
-    this.rig = rig;
+  applyFpArmsModel(model: Group): void {
+    const { group: holder, muzzle, yawErrorDeg } = buildAlignedGun(model, FP_ARMS_LENGTH);
+    console.info(`[Gun] 1인칭 팔 모델 정렬: 축 오차 ${yawErrorDeg.toFixed(1)}° 보정`);
+    if (this.rifleHolder) this.rifleHolder.visible = false;
+    for (const c of [...this.viewmodel.children]) if (c !== this.muzzle) c.visible = false;
+    holder.position.copy(FP_ARMS_OFFSET);
+    holder.rotation.set(FP_ARMS_ROT.x, FP_ARMS_ROT.y, FP_ARMS_ROT.z);
+    this.vmBase.copy(FP_ARMS_VM_BASE);
+    this.viewmodel.add(holder);
+    this.muzzle.parent?.remove(this.muzzle);
+    holder.add(this.muzzle);
+    this.muzzle.position.copy(muzzle);
     this.viewmodel.traverse((o) => {
       o.layers.set(Player.VIEWMODEL_LAYER);
       const m = o as Mesh;
@@ -328,7 +334,7 @@ export class Player implements Hittable, Healable {
 
     this.syncCamera();
     this.syncHitboxes();
-    this.muzzle.getWorldPosition(this.tmp);
+    this.fxMuzzlePosition(this.tmp);
     ctx.fx.setMuzzlePosition(this.tmp);
 
     // 전술 조준: 화면 안의 조준 가능한 적 표시
@@ -362,6 +368,20 @@ export class Player implements Hittable, Healable {
    * - 점프/착지: 공중에서 살짝 올라가고 착지 때 눌림, 정지 시 숨쉬기
    * - 재장전: 내렸다 올리기, 사격/로켓: 반동
    */
+  /**
+   * 총구 위치를 월드 FOV 기준으로 보정해 돌려준다.
+   * 뷰모델은 별도 FOV로 그리므로, 실제 총구 월드 좌표를 그대로 쓰면 궤적·섬광이
+   * 화면에 보이는 총구보다 바깥(아래/오른쪽)에서 출발한다. 같은 화면 위치에 오도록 x,y를 스케일한다.
+   */
+  private fxMuzzlePosition(out: Vector3): Vector3 {
+    this.muzzle.getWorldPosition(out);
+    this.camera.worldToLocal(out);
+    const k = Math.tan(MathUtils.degToRad(this.camera.fov) * 0.5) / Math.tan(MathUtils.degToRad(Player.VIEWMODEL_FOV) * 0.5);
+    out.x *= k;
+    out.y *= k;
+    return this.camera.localToWorld(out);
+  }
+
   private animateViewmodel(dt: number, now: number, strafeInput: number): void {
     const vm = this.viewmodel;
     const a = this.bobAmp;
@@ -377,23 +397,12 @@ export class Player implements Hittable, Healable {
     const air = this.ctrl.onGround ? 0 : clamp(-this.ctrl.vel.y * 0.004, -0.035, 0.035);
     const reloadDip = this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
 
-    if (this.rig) {
-      // 캐릭터 팔 리그: 카메라 원점 기준. 달리기 자세는 클립이 담당하므로 회전 블렌드는 약하게
-      vm.position.x = bx * 0.7 + this.swayX * 0.2;
-      vm.position.y = by * 0.7 + breathe + air - this.landKick * 0.6 - reloadDip * 0.1;
-      vm.position.z = this.recoil * 0.05 + this.rocketKick * 0.09;
-      vm.rotation.x = this.recoil * 0.08 + this.rocketKick * 0.2 + reloadDip * 0.35 + this.swayY - this.landKick * 0.9;
-      vm.rotation.y = this.swayX;
-      vm.rotation.z = bRoll * 0.6 + this.strafeTilt * 0.7 + reloadDip * 0.15;
-      this.rig.update(dt, sb, this.recoil > 0.2 || this.rocketKick > 0.2);
-      return;
-    }
-    vm.position.x = 0.32 + bx + this.swayX * 0.25 - sb * 0.05;
-    vm.position.y = -0.28 + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.12 - sb * 0.07;
-    vm.position.z = -0.55 + this.recoil * 0.07 + this.rocketKick * 0.12 + sb * 0.04;
-    vm.rotation.x = this.recoil * 0.12 + this.rocketKick * 0.3 + reloadDip * 0.5 + this.swayY - sb * 0.32 - this.landKick * 1.2;
-    vm.rotation.y = this.swayX + sb * 0.55;
-    vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.22 + sb * 0.3;
+    vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03;
+    vm.position.y = this.vmBase.y + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.12 - sb * 0.04;
+    vm.position.z = this.vmBase.z + this.recoil * 0.07 + this.rocketKick * 0.12 + sb * 0.03;
+    vm.rotation.x = this.recoil * 0.12 + this.rocketKick * 0.3 + reloadDip * 0.5 + this.swayY - sb * 0.14 - this.landKick * 1.2;
+    vm.rotation.y = this.swayX + sb * 0.28;
+    vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.22 + sb * 0.18;
   }
 
   // ---------- 스킬 ----------
@@ -408,7 +417,7 @@ export class Player implements Hittable, Healable {
     this.sprinting = false;
     this.camera.getWorldDirection(this.camDir);
     const aim = hitscan(this.camera.position, this.camDir, ab.range, ctx.map.meshes, ctx.hittables(), this).point;
-    this.muzzle.getWorldPosition(this.tmp);
+    this.fxMuzzlePosition(this.tmp);
     const dir = aim.clone().sub(this.tmp).normalize();
     ctx.spawnProjectile(new PulseRocket(ctx, this.tmp.clone(), dir, this, (h) => this.onRocketHit(h)));
     ctx.fx.muzzleSprite(this.tmp, 0.28);
@@ -505,7 +514,7 @@ export class Player implements Hittable, Healable {
     }
     const res = hitscan(origin, this.shotDir, this.weapon.def.range, ctx.map.meshes, ctx.hittables(), this);
 
-    this.muzzle.getWorldPosition(this.tmp);
+    this.fxMuzzlePosition(this.tmp);
     const hitColor = res.target ? 0xff7a4a : 0xffd27a;
     ctx.fx.bolt(this.tmp, res.point, this.ultActive ? 0xffd9a0 : 0x8ec5ff, hitColor, res.target ? 6 : 3);
     ctx.fx.muzzleFlash(6);
