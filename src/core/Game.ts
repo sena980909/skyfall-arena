@@ -331,6 +331,7 @@ export class Game {
       this.input.consumeMouse();
     }
 
+    this.fx.camPos.copy(this.camera.position);
     this.fx.update(dt);
     if (this.debug && this.state !== 'menu') {
       const items = this.bots.filter((b) => b.alive).map((b) => ({ world: b.position.clone().setY(b.position.y + 2.1), text: b.debugText() }));

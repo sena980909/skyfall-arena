@@ -6,7 +6,7 @@ import type { VfxTextures } from '@/core/Assets';
 
 interface Tracer { line: Line; mat: LineBasicMaterial; dieAt: number; life: number }
 interface Spark { mesh: Sprite; mat: SpriteMaterial; dieAt: number; life: number; vel: Vector3; size: number }
-interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dist: number; t: number; speed: number; hitColor: number; sparkCount: number }
+interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dir: Vector3; dist: number; len: number; t: number; speed: number; hitColor: number; sparkCount: number }
 interface Flash { sprite: Sprite; mat: SpriteMaterial; dieAt: number; life: number; grow?: number; base?: number }
 interface Mote { sprite: Sprite; mat: SpriteMaterial; vel: Vector3; dieAt: number; life: number; size: number; gravity: number }
 interface ImpactAnim { sprite: Sprite; mat: SpriteMaterial; tex: Texture; start: number; life: number }
@@ -18,6 +18,10 @@ export class Fx {
   private sparkList: Spark[] = [];
   private fades: Fade[] = [];
   private bolts: Bolt[] = [];
+  /** 탄환 리본을 카메라 쪽으로 돌리기 위한 현재 카메라 위치 (Game이 매 프레임 갱신) */
+  readonly camPos = new Vector3();
+  private readonly tmpV = new Vector3();
+  private readonly tmpV2 = new Vector3();
   private flashes: Flash[] = [];
   private readonly boltGeo = new BoxGeometry(0.05, 0.05, 1);
   /** 텍스처 볼트: Z 방향으로 뻗은 두 장의 교차 평면 */
@@ -41,7 +45,7 @@ export class Fx {
     scene.add(this.grenadeLight);
     this.flashTex = Fx.makeFlashTexture();
     this.dotTex = Fx.makeDotTexture();
-    const pg = new PlaneGeometry(1, 0.22);
+    const pg = new PlaneGeometry(1, 0.3);
     pg.rotateY(-Math.PI / 2); // 폭이 Z축을 따라가도록
     this.boltPlaneGeo = pg;
   }
@@ -102,11 +106,9 @@ export class Fx {
     let mat: MeshBasicMaterial;
     if (this.vfx?.bolt) {
       mat = new MeshBasicMaterial({ map: this.vfx.bolt, color, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false, side: DoubleSide });
+      // 한 장의 리본: 매 프레임 카메라를 향해 축 회전(십자 평면은 총구 근처에서 세로 막대로 보임)
       mesh = new Mesh(this.boltPlaneGeo, mat);
-      const cross = new Mesh(this.boltPlaneGeo, mat);
-      cross.rotation.z = Math.PI / 2;
-      mesh.add(cross);
-      mesh.scale.set(1, 1, len);
+      mesh.scale.set(1, 1, 0.05);
     } else {
       mat = new MeshBasicMaterial({ color, transparent: true, opacity: 0.95, blending: AdditiveBlending, depthWrite: false });
       mesh = new Mesh(this.boltGeo, mat);
@@ -118,7 +120,11 @@ export class Fx {
     mesh.position.copy(from);
     mesh.lookAt(to);
     this.scene.add(mesh);
-    this.bolts.push({ mesh, mat, from: from.clone(), to: to.clone(), dist, t: 0, speed, hitColor, sparkCount });
+    const dir = to.clone().sub(from).normalize();
+    // 첫 프레임부터 총구 앞에 반 길이쯤 보이도록 시작
+    const b: Bolt = { mesh, mat, from: from.clone(), to: to.clone(), dir, dist, len, t: len * 0.4, speed, hitColor, sparkCount };
+    this.placeBolt(b);
+    this.bolts.push(b);
     if (dist < 1.5) {
       // 아주 가까우면 바로 도착 처리
       this.sparks(to, hitColor, sparkCount);
@@ -311,6 +317,24 @@ export class Fx {
     this.fades.push({ obj, mats, dieAt: performance.now() / 1000 + life, life, onDone });
   }
 
+  /** 탄환 리본 배치: 꼬리는 총구에서 시작해 앞으로 자라고, 총구 근처에서는 페이드인, 도착 근처에서는 페이드아웃. 평면은 카메라를 향해 축 회전. */
+  private placeBolt(b: Bolt): void {
+    const head = Math.min(b.dist, b.t + b.len);
+    const tail = Math.max(0, head - b.len);
+    const vis = Math.max(0.05, head - tail);
+    b.mesh.scale.z = vis;
+    const mid = (head + tail) * 0.5;
+    b.mesh.position.copy(b.from).addScaledVector(b.dir, mid);
+    // lookAt의 up을 (dir × toCam)으로 주면 평면 법선(local X)이 카메라 쪽을 향한다
+    this.tmpV.copy(this.camPos).sub(b.mesh.position);
+    b.mesh.up.crossVectors(b.dir, this.tmpV);
+    if (b.mesh.up.lengthSq() < 1e-6) b.mesh.up.set(0, 1, 0);
+    b.mesh.lookAt(this.tmpV2.copy(b.mesh.position).add(b.dir));
+    const fadeIn = Math.min(1, tail / 0.4 + 0.5);
+    const fadeOut = Math.min(1, (b.dist - b.t) / 2 + 0.2);
+    b.mat.opacity = fadeIn * fadeOut;
+  }
+
   update(dt: number): void {
     const now = performance.now() / 1000;
     if (now > this.muzzleOff) this.muzzleLight.intensity = 0;
@@ -329,12 +353,7 @@ export class Fx {
         if (b.dist >= 1.5) this.sparks(b.to, b.hitColor, b.sparkCount);
         continue;
       }
-      const len = b.mesh.scale.z;
-      const head = Math.min(b.dist, b.t + len * 0.5);
-      const k = (head - len * 0.5) / b.dist;
-      b.mesh.position.lerpVectors(b.from, b.to, Math.max(0, k));
-      // 끝에 가까워지면 페이드
-      b.mat.opacity = 0.95 * Math.min(1, (b.dist - b.t) / 2 + 0.2);
+      this.placeBolt(b);
     }
     for (let i = this.flashes.length - 1; i >= 0; i--) {
       const f = this.flashes[i];
