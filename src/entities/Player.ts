@@ -34,8 +34,8 @@ export interface PlayerStats {
 const FP_ARMS_LENGTH = 0.92;
 /** 홀더(모델 중심) 위치: 팔 절단면이 카메라 아래쪽 바깥, 총구가 약 1.1m 앞 */
 const FP_ARMS_OFFSET = new Vector3(0.0, 0.0, -0.76);
-/** x<0: 총구 아래로, y>0: 총구를 화면 중앙(왼쪽)으로 */
-const FP_ARMS_ROT = new Vector3(0.04, 0.06, 0.0);
+/** x: 총열 피치, y: 요, z: 롤 보정 — PCA 정렬이 팔 때문에 "위" 축을 끌어가 조준기가 왼쪽으로 25° 기울어 있어 되돌린다 */
+const FP_ARMS_ROT = new Vector3(0.04, 0.06, -0.44);
 /** 일체형 뷰모델일 때 뷰모델 그룹 기준 위치 (양팔이라 중앙에 가깝고 낮게) */
 const FP_ARMS_VM_BASE = new Vector3(0.2, -0.36, -0.1);
 
