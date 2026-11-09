@@ -34,7 +34,7 @@ export interface PlayerStats {
 const FP_ARMS_LENGTH = 0.92;
 /** 홀더(모델 중심) 위치: 팔 절단면이 카메라 아래쪽 바깥, 총구가 약 1.1m 앞 */
 const FP_ARMS_OFFSET = new Vector3(0.0, 0.0, -0.8);
-/** x: 총열 피치, y: 요, z: 롤(정면 렌더로 조준기가 수직인지 확인해 보정) */
+/** x: 총열 피치, y: 요, z: 롤 — 모델 Y업을 믿으므로 롤은 0 */
 const FP_ARMS_ROT = new Vector3(0.04, 0.06, 0.0);
 /** 일체형 뷰모델일 때 뷰모델 그룹 기준 위치 (양팔이라 중앙에 가깝고 낮게) */
 const FP_ARMS_VM_BASE = new Vector3(0.2, -0.33, -0.1);
@@ -181,8 +181,9 @@ export class Player implements Hittable, Healable {
    * 주축 정렬(총열 -Z, 위 +Y) 후 총구는 맨 앞 지점. 라이플 단독 뷰모델은 숨긴다.
    */
   applyFpArmsModel(model: Group): void {
-    const { group: holder, muzzle, yawErrorDeg } = buildAlignedGun(model, FP_ARMS_LENGTH);
-    console.info(`[Gun] 1인칭 팔 모델 정렬: 축 오차 ${yawErrorDeg.toFixed(1)}° 보정`);
+    // 모델의 Y업을 그대로 두고 총열 요만 -Z로 맞춘다(팔 때문에 롤이 생기지 않음)
+    const { group: holder, muzzle, yawErrorDeg } = buildAlignedGun(model, FP_ARMS_LENGTH, true);
+    console.info(`[Gun] 1인칭 팔 모델 정렬: 요 ${yawErrorDeg.toFixed(1)}° 보정 (Y업 유지)`);
     if (this.rifleHolder) this.rifleHolder.visible = false;
     for (const c of [...this.viewmodel.children]) if (c !== this.muzzle) c.visible = false;
     holder.position.copy(FP_ARMS_OFFSET);

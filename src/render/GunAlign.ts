@@ -134,12 +134,65 @@ export function alignGun(root: Object3D): GunAlignment | null {
 }
 
 /**
- * 정렬·정규화된 총기 그룹 생성: 총열 -Z, 위 +Y, 중심 원점, 총열 길이 = length.
- * 반환 muzzle은 그룹 로컬의 총구 위치.
+ * 팔이 붙은 1인칭 모델용 정렬: 모델의 +Y를 그대로 "위"로 믿고(이미지→3D는 이미지의 위가 +Y),
+ * 총열 방향(요)만 -Z로 맞춘다. 롤/피치는 건드리지 않아 팔 때문에 총이 기울어지는 일이 없다.
+ * 총은 모델 위쪽 절반(팔·손은 아래)으로 보고, 수평면(XZ) 주축을 총열로 삼는다. 얇은 끝 = 총구.
+ * 중심은 총 부분의 중심(팔 제외)이라 팔 길이와 무관하게 총 위치가 일정하다.
  */
-export function buildAlignedGun(src: Object3D, length: number): { group: Group; muzzle: Vector3; yawErrorDeg: number } {
+export function alignGunUpright(root: Object3D): GunAlignment | null {
+  const pts = collectPoints(root, 12000);
+  if (pts.length < 50) return null;
+  let yMin = Infinity, yMax = -Infinity;
+  for (const p of pts) { if (p.y < yMin) yMin = p.y; if (p.y > yMax) yMax = p.y; }
+  const gun = pts.filter((p) => p.y > yMin + (yMax - yMin) * 0.5);
+  if (gun.length < 50) return null;
+  const mean = new Vector3();
+  for (const p of gun) mean.add(p);
+  mean.divideScalar(gun.length);
+  // XZ 평면 2x2 공분산 → 수평 주축
+  let sxx = 0, sxz = 0, szz = 0;
+  for (const p of gun) { const x = p.x - mean.x, z = p.z - mean.z; sxx += x * x; sxz += x * z; szz += z * z; }
+  const theta = 0.5 * Math.atan2(2 * sxz, sxx - szz);
+  const axis = new Vector3(Math.cos(theta), 0, Math.sin(theta));
+  let minP = Infinity, maxP = -Infinity;
+  const proj = new Float32Array(gun.length);
+  const d = new Vector3();
+  for (let i = 0; i < gun.length; i++) {
+    const pr = d.copy(gun[i]).sub(mean).dot(axis);
+    proj[i] = pr;
+    if (pr < minP) minP = pr;
+    if (pr > maxP) maxP = pr;
+  }
+  const span = maxP - minP;
+  const perp = new Vector3();
+  const thickness = (lo: number, hi: number): number => {
+    let sum = 0, n = 0;
+    for (let i = 0; i < gun.length; i++) {
+      if (proj[i] < lo || proj[i] > hi) continue;
+      perp.copy(gun[i]).sub(mean).addScaledVector(axis, -proj[i]);
+      sum += perp.length(); n++;
+    }
+    return n ? sum / n : Infinity;
+  };
+  const tMin = thickness(minP, minP + span * 0.18);
+  const tMax = thickness(maxP - span * 0.18, maxP);
+  const forward = axis.clone();
+  if (tMin < tMax) forward.negate();
+  // 수평 회전만: forward → -Z
+  const q = new Quaternion().setFromUnitVectors(forward, new Vector3(0, 0, -1));
+  const muzzleWorld = mean.clone().addScaledVector(forward, tMin < tMax ? -minP : maxP);
+  const toLocal = (p: Vector3): Vector3 => p.clone().applyQuaternion(q);
+  const yawErrorDeg = (Math.acos(Math.min(1, Math.abs(forward.z))) * 180) / Math.PI;
+  return { quaternion: q, muzzleLocal: toLocal(muzzleWorld), centerLocal: toLocal(mean), yawErrorDeg, length: span };
+}
+
+/**
+ * 정렬·정규화된 총기 그룹 생성: 총열 -Z, 위 +Y, 중심 원점, 총열 길이 = length.
+ * 반환 muzzle은 그룹 로컬의 총구 위치. upright=true면 alignGunUpright(모델 Y업 유지, 요만 보정) 사용.
+ */
+export function buildAlignedGun(src: Object3D, length: number, upright = false): { group: Group; muzzle: Vector3; yawErrorDeg: number } {
   const rifle = src.clone();
-  const a = alignGun(rifle);
+  const a = upright ? alignGunUpright(rifle) : alignGun(rifle);
   const group = new Group();
   if (!a) {
     group.add(rifle);
