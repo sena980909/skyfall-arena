@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SKYFALL ARENA — M1 Greybox</title>
+  <title>SKYFALL ARENA</title>
   <style>
     :root {
       --blue: #2f80ff;
@@ -99,6 +99,10 @@
 
     /* ---------- overlays ---------- */
     .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: rgba(5, 8, 14, .78); backdrop-filter: blur(4px); z-index: 10; }
+    /* 에셋 로드 전에는 민짜 그레이박스 장면이 비치지 않도록 불투명, 로드 후 부드럽게 반투명으로 */
+    #ov-menu { transition: background-color .7s ease; }
+    #ov-menu.loading { background: #06080e; backdrop-filter: none; }
+    #ov-menu.loading .btn.primary { opacity: .55; pointer-events: none; }
     /* 사망 오버레이는 쓰러지는 장면이 보이도록 얇게 */
     #ov-dead { background: radial-gradient(ellipse at center, rgba(60, 0, 0, .25), rgba(40, 0, 0, .55)); backdrop-filter: none; }
     .overlay.hidden { display: none; }
@@ -174,9 +178,9 @@
     <div id="lockmarks"></div>
   </div>
 
-  <div id="ov-menu" class="overlay">
+  <div id="ov-menu" class="overlay loading">
     <h1>SKYFALL ARENA</h1>
-    <div class="sub">M1 GREYBOX PROTOTYPE · 웨이브 섬멸전</div>
+    <div class="sub">PROTOTYPE · 웨이브 섬멸전</div>
     <div class="row" id="difficulty">
       <button class="btn" data-d="easy">EASY</button>
       <button class="btn sel" data-d="normal">NORMAL</button>
@@ -208,7 +212,7 @@
     <button class="btn primary" id="btn-restart">다시 시작</button>
   </div>
 
-  <div class="tag">SKYFALL ARENA · M1</div>
+  <div class="tag">SKYFALL ARENA · PROTOTYPE</div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

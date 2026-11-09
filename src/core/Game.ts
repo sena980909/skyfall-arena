@@ -165,6 +165,8 @@ export class Game {
       console.warn('[Assets] load failed, keeping greybox', e);
     } finally {
       if (startBtn) startBtn.textContent = '클릭하여 시작';
+      // 로드 전 민짜 장면이 비치지 않도록 불투명했던 메뉴를 반투명으로
+      document.getElementById('ov-menu')?.classList.remove('loading');
     }
   }
 
