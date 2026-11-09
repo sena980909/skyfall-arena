@@ -201,8 +201,10 @@ export class Player implements Hittable, Healable {
 
     // 시점
     const m = input.consumeMouse();
-    this.yaw -= m.dx * this.sensitivity;
-    this.pitch = clamp(this.pitch - m.dy * this.sensitivity, -89 * DEG2RAD, 89 * DEG2RAD);
+    // 한 프레임 회전 상한 (≈ 60°) — 스파이크가 새어 들어와도 화면이 뒤집히지 않게
+    const maxTurn = 1.05;
+    this.yaw -= clamp(m.dx * this.sensitivity, -maxTurn, maxTurn);
+    this.pitch = clamp(this.pitch - clamp(m.dy * this.sensitivity, -maxTurn, maxTurn), -89 * DEG2RAD, 89 * DEG2RAD);
     // 시선 스웨이: 마우스 이동에 뷰모델이 살짝 뒤처진다
     const k = Math.min(1, dt * 12);
     this.swayX += (clamp(-m.dx * 0.0009, -0.06, 0.06) - this.swayX) * k;
