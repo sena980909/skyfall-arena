@@ -99,6 +99,8 @@
 
     /* ---------- overlays ---------- */
     .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: rgba(5, 8, 14, .78); backdrop-filter: blur(4px); z-index: 10; }
+    /* 사망 오버레이는 쓰러지는 장면이 보이도록 얇게 */
+    #ov-dead { background: radial-gradient(ellipse at center, rgba(60, 0, 0, .25), rgba(40, 0, 0, .55)); backdrop-filter: none; }
     .overlay.hidden { display: none; }
     .overlay h1 { font-size: 56px; letter-spacing: 8px; margin: 0 0 6px; font-weight: 900; background: linear-gradient(90deg, #8ec5ff, #ffffff); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .overlay h2 { font-size: 36px; letter-spacing: 4px; margin: 0 0 12px; }

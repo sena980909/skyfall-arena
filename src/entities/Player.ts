@@ -99,6 +99,12 @@ export class Player implements Hittable, Healable {
   /** 뷰모델 전용 FOV(월드 FOV와 분리해 팔·총이 과장되지 않게) */
   static readonly VIEWMODEL_FOV = 56;
   private readonly eyeHeight = 1.6;
+  /** 사망 카메라: 쓰러지는 시간(초, -1이면 비활성), 기울 방향, 처치자 쪽 요 */
+  private deathT = -1;
+  private deathRoll = 0;
+  private deathYaw0 = 0;
+  private deathYawDelta = 0;
+  private deathPitch0 = 0;
   private readonly bodyHit: Mesh;
   private readonly headHit: Mesh;
   private readonly forward = new Vector3();
@@ -216,6 +222,7 @@ export class Player implements Hittable, Healable {
     this.rocketReadyAt = Math.min(this.rocketReadyAt, now);
     this.fieldReadyAt = Math.min(this.fieldReadyAt, now);
     this.viewmodel.visible = true;
+    this.deathT = -1;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
     this.syncCamera();
@@ -228,6 +235,47 @@ export class Player implements Hittable, Healable {
     this.ultReadyAnnounced = false;
     this.rocketReadyAt = 0;
     this.fieldReadyAt = 0;
+  }
+
+  /** 사망 카메라 시작: 처치자 방향으로 천천히 고개가 돌아가며, 맞은 쪽 반대로 기울어 바닥에 쓰러진다 */
+  private beginDeathCam(from: Vector3): void {
+    const p = this.ctrl.pos;
+    const dx = from.x - p.x;
+    const dz = from.z - p.z;
+    this.deathYaw0 = this.yaw;
+    this.deathPitch0 = this.pitch;
+    const target = Math.abs(dx) + Math.abs(dz) > 1e-3 ? Math.atan2(-dx, -dz) : this.yaw;
+    let delta = target - this.yaw;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    this.deathYawDelta = delta;
+    // 오른쪽에서 맞으면 왼쪽으로 쓰러진다
+    const rightDot = dx * Math.cos(this.yaw) - dz * Math.sin(this.yaw);
+    this.deathRoll = (rightDot > 0 ? 1 : -1) * 0.6;
+    this.deathT = 0;
+  }
+
+  /** Game이 사망 상태 동안 매 스텝 호출. 가속하며 쓰러지고 바닥에서 살짝 튕긴 뒤 누운 채 처치자를 본다 */
+  updateDeathCam(dt: number): void {
+    if (this.deathT < 0) return;
+    this.deathT += dt;
+    const FALL = 0.75;
+    const k = Math.min(1, this.deathT / FALL);
+    const ease = k * k;
+    const sm = k * k * (3 - 2 * k);
+    let bounce = 0;
+    if (k >= 1) {
+      const b = (this.deathT - FALL) / 0.28;
+      if (b < 1) bounce = Math.sin(b * Math.PI) * 0.06;
+    }
+    const eye = this.eyeHeight + (0.32 - this.eyeHeight) * ease + bounce;
+    const yawK = Math.min(1, this.deathT / 1.4);
+    const yaw = this.deathYaw0 + this.deathYawDelta * (yawK * yawK * (3 - 2 * yawK));
+    const pitch = this.deathPitch0 + (0.3 - this.deathPitch0) * sm;
+    const roll = this.deathRoll * sm + bounce * 1.5 * Math.sign(this.deathRoll);
+    const p = this.ctrl.pos;
+    this.camera.position.set(p.x, p.y + eye, p.z);
+    this.camera.rotation.set(pitch, yaw, roll);
   }
 
   private syncCamera(): void {
@@ -556,6 +604,7 @@ export class Player implements Hittable, Healable {
       this.stats.deaths++;
       this.stats.streak = 0;
       this.viewmodel.visible = false;
+      this.beginDeathCam(info.from);
       this.ultUntil = 0;
       this.camera.fov = this.baseFov;
       this.camera.updateProjectionMatrix();

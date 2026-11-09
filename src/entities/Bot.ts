@@ -449,11 +449,18 @@ export class Bot implements Hittable, Healable {
     }
     if (this.hp <= 0) {
       this.hp = 0;
-      this.die(info.headshot);
+      this.die(info.headshot, info.from);
     }
   }
 
-  private die(headshot: boolean): void {
+  /** 사망 넘어짐 상태 (생성 death 클립은 쓰러지지 않아 절차적으로 넘어뜨린다) */
+  private fallT = -1;
+  private readonly fallAxis = new Vector3(1, 0, 0);
+  private fallTwist = 0;
+  private static readonly FALL_DUR = 0.55;
+  private static readonly LIE_DUR = 0.9;
+
+  private die(headshot: boolean, from?: Vector3): void {
     this.alive = false;
     this.state = 'dead';
     this.debugLine.visible = false;
@@ -462,35 +469,53 @@ export class Bot implements Hittable, Healable {
     this.bodyMat.emissive.setHex(0x000000);
     this.headMat.emissive.setHex(0x000000);
     for (const m of this.skinMats) m.emissive.setHex(0x000000);
-    if (this.mixer && this.actions.death) {
-      // 사망 애니메이션 재생 후 디졸브 (봇 update는 멈추므로 자체 타이머로 진행)
-      this.playAnim('death', 0.05);
-      const mixer = this.mixer;
-      const group = this.group;
-      const fx = this.ctx.fx;
-      const dur = Math.min(2.0, this.actions.death.getClip().duration);
-      let last = performance.now();
-      let t = 0;
-      const tick = (): void => {
-        const nowMs = performance.now();
-        const step = Math.min(0.05, (nowMs - last) / 1000);
-        last = nowMs;
-        mixer.update(step);
-        t += step;
-        if (t >= dur) fx.dissolve(group, 0.6);
-        else requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    } else {
+    // 넘어지는 방향: 공격자 반대쪽(뒤로). 공격자 정보가 없으면 바라보는 방향 반대
+    this.tmp.set(-Math.sin(this.facingYaw), 0, -Math.cos(this.facingYaw));
+    if (from) {
+      this.tmp.copy(this.ctrl.pos).sub(from);
+      this.tmp.y = 0;
+      if (this.tmp.lengthSq() < 1e-4) this.tmp.set(-Math.sin(this.facingYaw), 0, -Math.cos(this.facingYaw));
+    }
+    this.tmp.normalize();
+    // 회전축 = up × d  (이 축으로 +θ 회전하면 머리가 d 쪽으로 기운다)
+    this.fallAxis.crossVectors(Bot.UP, this.tmp).normalize();
+    this.fallTwist = (headshot ? 0.5 : 0.25) * (Math.random() < 0.5 ? -1 : 1);
+    this.fallT = 0;
+    // 중립 자세로 짧게 블렌드(달리기 중 사망 시 팔다리가 벌어진 채 굳지 않게)
+    if (this.mixer && this.actions.idle) this.playAnim('idle', 0.12);
+    this.ctx.onBotKilled(this, headshot);
+  }
+
+  /** 넘어짐: 가속 회전(나무 쓰러지듯) → 바닥에 눕고 → 잠시 뒤 디졸브 */
+  private updateDeath(dt: number): void {
+    if (this.fallT < 0) return;
+    this.fallT += dt;
+    const k = Math.min(1, this.fallT / Bot.FALL_DUR);
+    // 가속(중력) + 바닥에서 살짝 튕김
+    let ang = (Math.PI / 2) * k * k;
+    if (k >= 1) {
+      const b = (this.fallT - Bot.FALL_DUR) / 0.18;
+      if (b < 1) ang += Math.sin(b * Math.PI) * 0.08;
+    }
+    this.tmpQ.setFromAxisAngle(this.fallAxis, ang);
+    this.tmpQ2.setFromAxisAngle(Bot.UP, this.facingYaw + this.fallTwist * k);
+    this.group.quaternion.copy(this.tmpQ).multiply(this.tmpQ2);
+    // 넘어지며 발이 바닥에 붙은 채 몸이 내려가도록 약간 가라앉힘
+    this.group.position.y = this.ctrl.pos.y - 0.06 * k;
+    if (this.mixer && this.fallT < 0.3) this.mixer.update(dt);
+    if (this.fallT >= Bot.FALL_DUR + Bot.LIE_DUR) {
+      this.fallT = -1;
       this.ctx.fx.dissolve(this.group, this.isBoss ? 1.2 : 0.6);
     }
-    this.ctx.onBotKilled(this, headshot);
   }
 
   // ---------- 업데이트 ----------
 
   update(dt: number): void {
-    if (!this.alive) return;
+    if (!this.alive) {
+      this.updateDeath(dt);
+      return;
+    }
     const ctx = this.ctx;
     const now = ctx.now;
     this.weapon.update(now, dt);

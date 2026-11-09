@@ -51,6 +51,8 @@ export class Game {
   private lives = PLAYER_LIVES;
   private score = 0;
   private respawnAt = 0;
+  /** 사망 오버레이는 쓰러지는 연출이 보이도록 잠시 뒤에 띄운다 */
+  private deadOverlayAt = 0;
   private debug = false;
   private startedAt = 0;
   assets: LoadedAssets | null = null;
@@ -267,8 +269,8 @@ export class Game {
     }
     this.state = 'dead';
     this.respawnAt = this.simTime + RESPAWN_SECONDS;
+    this.deadOverlayAt = this.simTime + 0.6;
     this.hud.setDead(by, RESPAWN_SECONDS);
-    this.hud.showOverlay('ov-dead');
   }
 
   private respawn(): void {
@@ -318,6 +320,9 @@ export class Game {
       if (!this.debug) this.hud.clearBotLabels();
     }
 
+    // 키 "방금 눌림"은 시뮬레이션 스텝이 실제로 소비한 뒤에만 지운다.
+    // 렌더 프레임마다 지우면 스텝이 없는 프레임(고주사율 모니터)에서 점프·스킬 입력이 유실된다.
+    let consumedInput = true;
     if (this.state === 'playing' || this.state === 'dead') {
       this.accumulator += dt;
       let steps = 0;
@@ -326,6 +331,7 @@ export class Game {
         this.accumulator -= FIXED_DT;
         steps++;
       }
+      consumedInput = steps > 0;
     } else {
       // 메뉴/일시정지: 마우스 누적 폐기
       this.input.consumeMouse();
@@ -339,7 +345,7 @@ export class Game {
       for (const b of this.bots) b.setDebug(true);
     }
     this.renderFrame();
-    this.input.endFrame();
+    if (consumedInput) this.input.endFrame();
   }
 
   /** 월드 패스 → 깊이 버퍼 비움 → 뷰모델 패스. 1인칭 총이 벽을 뚫고 보이지 않게 한다 */
@@ -406,6 +412,8 @@ export class Game {
     }
     else {
       this.input.consumeMouse();
+      this.player.updateDeathCam(dt);
+      if (this.simTime >= this.deadOverlayAt) this.hud.showOverlay('ov-dead');
       const left = Math.max(0, this.respawnAt - this.simTime);
       this.hud.setDead(this.lastKiller(), Math.ceil(left));
       if (left <= 0) this.respawn();
