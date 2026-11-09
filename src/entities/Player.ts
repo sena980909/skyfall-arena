@@ -10,7 +10,7 @@ import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type H
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';
 import { buildAlignedGun } from '@/render/GunAlign';
-import { addArmSleeves, collectLocalPoints } from '@/render/ArmSleeves';
+import { addArmSleeves } from '@/render/ArmSleeves';
 import { angleBetweenDeg, clamp, DEG2RAD, jitterDirection } from '@/core/MathUtil';
 import type { PlayerInput } from '@/core/PlayerInput';
 import type { GameContext } from '@/core/Context';
@@ -202,7 +202,8 @@ export class Player implements Hittable, Healable {
     this.viewmodel.rotation.set(0, 0, 0);
     this.camera.updateMatrixWorld(true);
     const shoulder = (x: number) => holder.worldToLocal(this.camera.localToWorld(new Vector3(x, -0.42, 0.3)));
-    addArmSleeves(holder, collectLocalPoints(holder), { shoulders: [shoulder(-0.26), shoulder(0.26)] });
+    const sleeves = addArmSleeves(holder, { shoulders: [shoulder(-0.26), shoulder(0.26)] });
+    console.info(`[Gun] 1인칭 팔 절단부 ${sleeves.length / 2}곳에 관절·상완 연결`);
     this.muzzle.parent?.remove(this.muzzle);
     holder.add(this.muzzle);
     this.muzzle.position.copy(muzzle);
