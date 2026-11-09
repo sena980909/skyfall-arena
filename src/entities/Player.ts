@@ -32,13 +32,13 @@ export interface PlayerStats {
 }
 
 /** 1인칭 팔+총 일체형 모델 배치 (뷰모델 로컬). 스크린샷으로 튜닝 */
-const FP_ARMS_LENGTH = 0.92;
+const FP_ARMS_LENGTH = 1.1;
 /** 홀더(모델 중심) 위치: 팔 절단면이 카메라 아래쪽 바깥, 총구가 약 1.1m 앞 */
-const FP_ARMS_OFFSET = new Vector3(0.0, 0.0, -0.8);
+const FP_ARMS_OFFSET = new Vector3(0.0, 0.0, -0.9);
 /** x: 총열 피치, y: 요, z: 롤 — 모델 Y업을 믿으므로 롤은 0 */
 const FP_ARMS_ROT = new Vector3(0.12, 0.06, 0.0);
 /** 일체형 뷰모델일 때 뷰모델 그룹 기준 위치 (양팔이라 중앙에 가깝고 낮게) */
-const FP_ARMS_VM_BASE = new Vector3(0.2, -0.24, -0.1);
+const FP_ARMS_VM_BASE = new Vector3(0.21, -0.26, -0.1);
 
 const emptyStats = (): PlayerStats => ({ shots: 0, hits: 0, headshots: 0, kills: 0, deaths: 0, streak: 0, maxStreak: 0, rockets: 0, fields: 0, ults: 0, damageTaken: 0 });
 
