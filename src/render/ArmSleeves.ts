@@ -79,23 +79,27 @@ export function addArmSleeves(group: Group, opts: SleeveOptions): Object3D[] {
       const d = s.clone().sub(end.center).normalize().dot(end.dir);
       if (d > best) { best = d; target = s; }
     }
-    // 관절 구: 패인 끝을 덮는다 (살짝 안쪽으로)
-    const joint = new Mesh(new SphereGeometry(r * 1.08, 20, 14), mat);
-    joint.position.copy(end.center).addScaledVector(end.dir, -r * 0.2);
+    // 관절 구: 패인 끝을 덮는다 (살짝 안쪽으로). 전완 장갑과 어울리게 굵게
+    const joint = new Mesh(new SphereGeometry(r * 1.15, 22, 16), mat);
+    joint.position.copy(end.center).addScaledVector(end.dir, -r * 0.25);
     group.add(joint);
     made.push(joint);
     // 상완: 관절에서 어깨까지 (위로 갈수록 굵게)
     const dir = target.clone().sub(end.center);
     const len = Math.max(0.3, dir.length() + 0.15);
     dir.normalize();
-    const geo = new CylinderGeometry(r * 1.0, r * 1.25, len, 20, 1, false);
+    const geo = new CylinderGeometry(r * 1.12, r * 1.45, len, 22, 1, false);
     geo.translate(0, len / 2, 0);
     const sleeve = new Mesh(geo, mat);
     sleeve.position.copy(end.center);
     sleeve.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), dir);
-    const ringMesh = new Mesh(new CylinderGeometry(r * 1.08, r * 1.12, r * 0.8, 20, 1, false), band);
-    ringMesh.position.y = r * 1.1;
+    // 팔꿈치 장갑 띠 + 상완 장갑판(넓은 띠)
+    const ringMesh = new Mesh(new CylinderGeometry(r * 1.2, r * 1.25, r * 1.0, 22, 1, false), band);
+    ringMesh.position.y = r * 1.3;
     sleeve.add(ringMesh);
+    const plate = new Mesh(new CylinderGeometry(r * 1.35, r * 1.5, r * 2.0, 22, 1, false), band);
+    plate.position.y = r * 3.8;
+    sleeve.add(plate);
     group.add(sleeve);
     made.push(sleeve);
   }
