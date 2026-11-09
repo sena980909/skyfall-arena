@@ -28,6 +28,7 @@ export class Hud {
   private readonly dmgnums = $('dmgnums');
   private readonly killfeed = $('killfeed');
   private readonly botlabels = $('botlabels');
+  private readonly lockmarks = $('lockmarks');
   private readonly skills = [$('skill-0'), $('skill-1')];
   private readonly flashWhite = $('flashwhite');
   private readonly ultTint = $('ulttint');
@@ -195,6 +196,23 @@ export class Hud {
     });
   }
 
+  /** 전술 조준 락온 마커: 첫 번째가 현재 사격 대상 */
+  setLockMarkers(points: Vector3[], camera: Camera): void {
+    while (this.lockmarks.children.length > points.length) this.lockmarks.lastElementChild?.remove();
+    while (this.lockmarks.children.length < points.length) {
+      const el = document.createElement('div');
+      el.className = 'lockmark';
+      this.lockmarks.appendChild(el);
+    }
+    points.forEach((p, i) => {
+      const el = this.lockmarks.children[i] as HTMLElement;
+      this.tmp.copy(p).project(camera);
+      el.style.left = `${(this.tmp.x * 0.5 + 0.5) * window.innerWidth}px`;
+      el.style.top = `${(-this.tmp.y * 0.5 + 0.5) * window.innerHeight}px`;
+      el.classList.toggle('primary', i === 0);
+    });
+  }
+
   clearBotLabels(): void {
     this.botlabels.replaceChildren();
   }
@@ -231,5 +249,6 @@ export class Hud {
     this.dmgnums.replaceChildren();
     this.dmgdir.replaceChildren();
     this.clearBotLabels();
+    this.lockmarks.replaceChildren();
   }
 }

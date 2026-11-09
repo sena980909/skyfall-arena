@@ -52,8 +52,6 @@ export class Autopilot implements PlayerInput {
   private detourGoal: Vector3 | null = null;
   private backUntil = 0;
   private backBlocked = false;
-  private lastHp = 0;
-  private lastDamageTime = -Infinity;
   private goalPack: HealthPack | null = null;
   /** 관찰 로그 */
   readonly events: string[] = [];
@@ -65,7 +63,6 @@ export class Autopilot implements PlayerInput {
 
   constructor(private readonly ctx: GameContext, readonly profile: AutopilotProfile = AUTOPILOT_PROFILES.average) {
     this.lastPos.copy(ctx.player.position);
-    this.lastHp = ctx.player.hp;
   }
 
   // ---------- PlayerInput ----------
@@ -104,10 +101,9 @@ export class Autopilot implements PlayerInput {
     const now = ctx.now;
     this.keys.clear();
     this.mouseDown[0] = false;
+    this.mouseDown[2] = false;
     if (!p.alive) return;
 
-    if (p.hp < this.lastHp) this.lastDamageTime = now;
-    this.lastHp = p.hp;
 
     const eye = this.eyeV.copy(p.position).setY(p.position.y + 1.6);
     const visible = this.visibleBots(eye);
@@ -286,25 +282,23 @@ export class Autopilot implements PlayerInput {
   private abilities(visible: Bot[], now: number): void {
     const p = this.ctx.player;
     const ab = p.hero.abilities;
-    const underFire = now - this.lastDamageTime < 0.8;
-    // 블링크: 피격 중 + 체력 낮음 → 옆으로 이탈
-    if (underFire && p.hp < 110 && now >= p.blinkReadyAt) {
-      this.keys.add(this.strafeDir > 0 ? 'KeyD' : 'KeyA');
-      this.press('KeyF');
-      this.log(`블링크 (HP ${p.hp})`);
-    }
-    // 섬광탄: 가까운 타겟 + 다수 또는 저체력
-    if (this.target && now >= p.flashReadyAt) {
+    // 펄스 로켓: 조준이 잡힌 타겟이 5~30m
+    if (this.target && now >= p.rocketReadyAt && now - this.targetSince > this.profile.reactionTime + 0.15) {
       const d = this.target.position.distanceTo(p.position);
-      if ((d < 16 && visible.length >= 2) || (d < 20 && p.hp < 70) || (this.target.isBoss && d < 18)) {
-        this.press('KeyE');
-        this.log(`섬광탄 (봇 ${visible.length}체, HP ${p.hp})`);
+      if (d > 5 && d < 30) {
+        this.mouseDown[2] = true;
+        this.log(`펄스 로켓 (${d.toFixed(0)}m)`);
       }
+    }
+    // 치유 필드: 체력이 낮아지면 발밑에 설치
+    if (p.hp < 120 && now >= p.fieldReadyAt) {
+      this.press('KeyE');
+      this.log(`치유 필드 (HP ${Math.round(p.hp)})`);
     }
     // 궁: 충전 완료 + 2체 이상 보이거나 보스
     if (p.ultCharge >= ab.ult.chargeNeeded && !p.ultActive && (visible.length >= 2 || visible.some((b) => b.isBoss))) {
       this.press('KeyQ');
-      this.log(`오버클럭 (봇 ${visible.length}체)`);
+      this.log(`전술 조준 (봇 ${visible.length}체)`);
     }
   }
 

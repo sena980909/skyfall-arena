@@ -142,6 +142,20 @@ export class Sfx {
 
   // ---------- 스킬 ----------
 
+  rocketFire(): void {
+    this.synth?.rocketFire();
+  }
+
+  rocketExplode(pos: Vector3): void {
+    if (!this.synth) return;
+    const dst = this.pannerAt(pos);
+    this.synth.rocketExplode(dst ?? this.synth.destination, 1.2);
+  }
+
+  healField(): void {
+    this.synth?.healField();
+  }
+
   dash(): void {
     this.synth?.dash();
     this.layer('dash');

@@ -7,7 +7,8 @@ import type { VfxTextures } from '@/core/Assets';
 interface Tracer { line: Line; mat: LineBasicMaterial; dieAt: number; life: number }
 interface Spark { mesh: Sprite; mat: SpriteMaterial; dieAt: number; life: number; vel: Vector3; size: number }
 interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dist: number; t: number; speed: number; hitColor: number; sparkCount: number }
-interface Flash { sprite: Sprite; mat: SpriteMaterial; dieAt: number; life: number; grow?: number }
+interface Flash { sprite: Sprite; mat: SpriteMaterial; dieAt: number; life: number; grow?: number; base?: number }
+interface Mote { sprite: Sprite; mat: SpriteMaterial; vel: Vector3; dieAt: number; life: number; size: number; gravity: number }
 interface ImpactAnim { sprite: Sprite; mat: SpriteMaterial; tex: Texture; start: number; life: number }
 interface Fade { obj: Object3D; mats: { m: MeshBasicMaterial | import('three').MeshStandardMaterial; }[]; dieAt: number; life: number; onDone?: () => void }
 
@@ -25,6 +26,7 @@ export class Fx {
   private readonly dotTex: CanvasTexture;
   private vfx: VfxTextures | null = null;
   private impacts: ImpactAnim[] = [];
+  private motes: Mote[] = [];
   readonly muzzleLight = new PointLight(0xffd27a, 0, 8, 2);
   /** 섬광탄 비행 중 빛 — 상시 존재(강도 0)시켜 조명 개수 변화를 막는다 */
   readonly grenadeLight = new PointLight(0x8ec5ff, 0, 4, 2);
@@ -185,9 +187,51 @@ export class Fx {
     this.sparks(far, 0xffd27a, 2);
     this.muzzleSprite(far);
     this.flashBurst(far);
+    this.rocketExplosion(far);
+    this.mote(far, 0xffffff, new Vector3(), 0.1, 0.1);
     this.muzzleLight.intensity = 0;
     renderer.compile(this.scene, camera);
     this.clear();
+  }
+
+  /** 부드러운 원형 발광 스프라이트 (로켓 탄 등) */
+  glowSprite(color: number, size: number): Sprite {
+    const mat = new SpriteMaterial({ map: this.dotTex, color, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false });
+    const sp = new Sprite(mat);
+    sp.scale.set(size, size, 1);
+    return sp;
+  }
+
+  /** 떠다니는 발광 입자 (로켓 꼬리, 치유 필드) */
+  mote(point: Vector3, color: number, vel: Vector3, life: number, size: number, gravity = 0): void {
+    const mat = new SpriteMaterial({ map: this.dotTex, color, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false });
+    const sprite = new Sprite(mat);
+    sprite.position.copy(point);
+    sprite.scale.set(size, size, 1);
+    this.scene.add(sprite);
+    this.motes.push({ sprite, mat, vel: vel.clone(), dieAt: performance.now() / 1000 + life, life, size, gravity });
+  }
+
+  /** 펄스 로켓 폭발: 임팩트 시트 + 확장 섬광 + 파편 입자 + 순간 조명 */
+  rocketExplosion(point: Vector3): void {
+    const now = performance.now() / 1000;
+    if (this.vfx?.impact) this.impactSprite(point, 0xbfe6ff, 3.2);
+    const tex = this.vfx?.flashBurst ?? this.flashTex;
+    const smat = new SpriteMaterial({ map: tex, color: 0xcfe9ff, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false });
+    const sp = new Sprite(smat);
+    sp.position.copy(point);
+    sp.scale.set(1, 1, 1);
+    this.scene.add(sp);
+    this.flashes.push({ sprite: sp, mat: smat, dieAt: now + 0.28, life: 0.28, grow: 5, base: 1 });
+    for (let i = 0; i < 16; i++) {
+      const v = new Vector3((Math.random() - 0.5) * 9, Math.random() * 6 + 1, (Math.random() - 0.5) * 9);
+      this.mote(point, i % 3 === 0 ? 0xffd27a : 0x9fd8ff, v, 0.35 + Math.random() * 0.3, 0.1 + Math.random() * 0.1, 14);
+    }
+    this.muzzleLight.position.copy(point);
+    this.muzzleLight.color.setHex(0xcfe9ff);
+    this.muzzleLight.intensity = 16;
+    this.muzzleOff = now + 0.12;
+    setTimeout(() => this.muzzleLight.color.setHex(0xffd27a), 160);
   }
 
   /** 블링크 대시 궤적 */
@@ -302,10 +346,25 @@ export class Fx {
       } else {
         f.mat.opacity = r;
         if (f.grow) {
-          const sc = 3 + (1 - r) * f.grow;
+          const sc = (f.base ?? 3) + (1 - r) * f.grow;
           f.sprite.scale.set(sc, sc, 1);
         }
       }
+    }
+    for (let i = this.motes.length - 1; i >= 0; i--) {
+      const m = this.motes[i];
+      const r = (m.dieAt - now) / m.life;
+      if (r <= 0) {
+        this.scene.remove(m.sprite);
+        m.mat.dispose();
+        this.motes.splice(i, 1);
+        continue;
+      }
+      m.vel.y -= m.gravity * dt;
+      m.sprite.position.addScaledVector(m.vel, dt);
+      m.mat.opacity = r;
+      const sz = m.size * (0.35 + 0.65 * r);
+      m.sprite.scale.set(sz, sz, 1);
     }
     for (let i = this.impacts.length - 1; i >= 0; i--) {
       const im = this.impacts[i];
@@ -369,6 +428,8 @@ export class Fx {
     for (const b of this.bolts) this.scene.remove(b.mesh);
     for (const f of this.flashes) this.scene.remove(f.sprite);
     for (const im of this.impacts) this.scene.remove(im.sprite);
+    for (const m of this.motes) this.scene.remove(m.sprite);
+    this.motes = [];
     this.bolts = [];
     this.flashes = [];
     this.impacts = [];

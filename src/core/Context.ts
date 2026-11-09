@@ -10,7 +10,7 @@ import type { Player } from '@/entities/Player';
 import type { Bot } from '@/entities/Bot';
 import type { HealthPack } from '@/world/HealthPack';
 import type { PlayerInput } from '@/core/PlayerInput';
-import type { FlashGrenade } from '@/combat/FlashGrenade';
+import type { Projectile } from '@/combat/Projectile';
 import type { LoadedAssets } from '@/core/Assets';
 
 /** 엔티티가 월드와 상호작용할 때 쓰는 공용 컨텍스트 */
@@ -37,5 +37,5 @@ export interface GameContext {
   onPlayerDied(byName: string): void;
   /** 플레이어 총성 등 봇이 들을 수 있는 이벤트 */
   onNoise(position: import('three').Vector3, radius: number): void;
-  spawnProjectile(p: FlashGrenade): void;
+  spawnProjectile(p: Projectile): void;
 }

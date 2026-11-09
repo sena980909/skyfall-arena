@@ -62,7 +62,7 @@
     .skill.cooling .label::after { content: attr(data-sec); display: block; font-size: 13px; color: #ffd166; }
     .skill.ready { border-color: rgba(142,197,255,.9); box-shadow: 0 0 10px rgba(47,128,255,.45); }
     #flashwhite { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
-    #ulttint { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(47,128,255,0) 50%, rgba(47,128,255,.45) 100%); opacity: 0; transition: opacity .3s; pointer-events: none; }
+    #ulttint { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(255,150,40,0) 55%, rgba(255,140,40,.35) 100%); opacity: 0; transition: opacity .3s; pointer-events: none; }
     .ult.active { border-color: #8ec5ff; color: #8ec5ff; background: rgba(47,128,255,.35); animation: none; }
 
     .hud-bc { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); text-align: center; }
@@ -93,6 +93,8 @@
     .dmgnum.hs { color: #ffd166; font-size: 22px; }
     @keyframes dmgnum { 0% { opacity: 1; margin-top: 0; } 100% { opacity: 0; margin-top: -40px; } }
 
+    .lockmark { position: absolute; width: 30px; height: 30px; border: 2px solid rgba(255, 190, 90, .75); transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 8px rgba(255, 160, 60, .6); pointer-events: none; }
+    .lockmark.primary { border-color: #ffd166; width: 38px; height: 38px; box-shadow: 0 0 14px rgba(255, 200, 80, .9); }
     .botlabel { position: absolute; transform: translate(-50%, -100%); font-size: 11px; background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 3px; color: #ffd166; white-space: nowrap; }
 
     /* ---------- overlays ---------- */
@@ -147,8 +149,8 @@
       <div class="ammo"><span id="hud-ammo">30</span> <small>/ 30</small></div>
       <div class="reload" id="hud-reload"></div>
       <div class="skills">
-        <div class="skill" id="skill-0"><span class="key">F</span><span class="label">블링크</span><span class="cd"></span></div>
-        <div class="skill" id="skill-1"><span class="key">E</span><span class="label">섬광탄</span><span class="cd"></span></div>
+        <div class="skill" id="skill-0"><span class="key">우클릭</span><span class="label">펄스 로켓</span><span class="cd"></span></div>
+        <div class="skill" id="skill-1"><span class="key">E</span><span class="label">치유 필드</span><span class="cd"></span></div>
       </div>
     </div>
     <div id="crosshair">
@@ -167,6 +169,7 @@
     <div id="ulttint"></div>
     <div id="dmgnums"></div>
     <div id="botlabels"></div>
+    <div id="lockmarks"></div>
   </div>
 
   <div id="ov-menu" class="overlay">
@@ -180,7 +183,7 @@
     <button class="btn primary" id="btn-start">클릭하여 시작</button>
     <div class="keys">
       <b>WASD</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프 · <b>좌클릭</b> 사격 · <b>R</b> 재장전<br/>
-      <b>F</b> 블링크 · <b>E</b> 섬광탄 · <b>Q</b> 오버클럭 · <b>F3</b> 봇 디버그 · <b>F8</b> 오토파일럿 · <b>Esc</b> 일시정지
+      <b>우클릭</b> 펄스 로켓 · <b>E</b> 치유 필드 · <b>Q</b> 전술 조준 · <b>F3</b> 봇 디버그 · <b>F8</b> 오토파일럿 · <b>Esc</b> 일시정지
     </div>
   </div>
 

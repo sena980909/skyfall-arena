@@ -1,6 +1,6 @@
 import {
   AnimationAction, AnimationClip, AnimationMixer, Box3, BoxGeometry, BufferGeometry, CapsuleGeometry, Color,
-  Float32BufferAttribute, Group, Line, LineBasicMaterial, LoopOnce, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion,
+  Euler, Float32BufferAttribute, Group, Line, LineBasicMaterial, LoopOnce, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion,
   SkinnedMesh, SphereGeometry, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -107,6 +107,11 @@ export class Bot implements Hittable, Healable {
   private handBone: Object3D | null = null;
   private rifleKick = 0;
   private stepTimer = 0;
+  /** 0 = 총구를 내린 이동 자세(로우레디), 1 = 조준 */
+  private rifleEngage = 0;
+  private rifleBob = 0;
+  private readonly tmpE = new Euler();
+  private readonly tmpQ2 = new Quaternion();
   private readonly tmpQ = new Quaternion();
   private readonly tmpM = new Matrix4();
   private static readonly UP = new Vector3(0, 1, 0);
@@ -288,8 +293,11 @@ export class Bot implements Hittable, Healable {
     this.updateRifleTransform();
   }
 
-  /** 라이플: 위치 = 오른손 본, 방향 = 조준 방향 (그룹 로컬) */
-  private updateRifleTransform(): void {
+  /**
+   * 라이플: 위치 = 오른손 본, 방향 = 조준 방향 (그룹 로컬)
+   * + 비교전 시 총구를 내리고 안쪽으로 돌린 로우레디 자세, 이동 중 걸음에 맞춘 흔들림
+   */
+  private updateRifleTransform(dt = 0, speed = 0): void {
     if (!this.rifleHolder || !this.handBone) return;
     const holder = this.rifleHolder;
     this.handBone.getWorldPosition(this.tmp);
@@ -306,9 +314,22 @@ export class Bot implements Hittable, Healable {
     this.tmpM.lookAt(Bot.ZERO, this.tmp2, Bot.UP);
     this.tmpQ.setFromRotationMatrix(this.tmpM);
     holder.quaternion.copy(this.tmpQ);
-    // 파지 보정: 개머리판이 어깨에 오도록 뒤로·아래로, 반동은 뒤로
+    const engaged = this.canSee || this.ctx.now < this.shootUntil || (this.state === 'combat' && this.mode === 'hiding');
+    this.rifleEngage += ((engaged ? 1 : 0) - this.rifleEngage) * Math.min(1, dt * 6);
+    const low = 1 - this.rifleEngage;
+    this.rifleBob += dt * speed * 2.3;
+    const mv = Math.min(1, speed / 4) * (1 - 0.55 * this.rifleEngage);
+    const ph = this.rifleBob;
+    this.tmpE.set(
+      -0.55 * low + Math.sin(ph * 2) * 0.06 * mv,
+      0.4 * low + Math.sin(ph) * 0.05 * mv,
+      0.3 * low + Math.sin(ph) * 0.1 * mv,
+    );
+    this.tmpQ2.setFromEuler(this.tmpE);
+    holder.quaternion.multiply(this.tmpQ2);
+    // 파지 보정: 개머리판이 어깨에 오도록 뒤로·아래로, 반동은 뒤로, 걸음마다 상하
     holder.translateZ(0.06 + this.rifleKick);
-    holder.translateY(-0.1);
+    holder.translateY(-0.1 - Math.abs(Math.cos(ph)) * 0.03 * mv);
     this.rifleKick *= 0.8;
   }
 
@@ -376,7 +397,7 @@ export class Bot implements Hittable, Healable {
     }
     this.mixer.update(dt);
     this.group.updateMatrixWorld(true);
-    this.updateRifleTransform();
+    this.updateRifleTransform(dt, speed);
     if (speed > 1.0 && this.ctrl.onGround) {
       this.stepTimer += dt * speed;
       if (this.stepTimer > 2.2) {

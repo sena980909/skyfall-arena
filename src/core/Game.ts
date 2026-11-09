@@ -16,7 +16,7 @@ import { Player } from '@/entities/Player';
 import type { Bot } from '@/entities/Bot';
 import { WaveManager } from '@/world/WaveManager';
 import { HealthPack } from '@/world/HealthPack';
-import type { FlashGrenade } from '@/combat/FlashGrenade';
+import type { Projectile } from '@/combat/Projectile';
 import { DIFFICULTIES, type DifficultyId } from '@/data/difficulty';
 import { PLAYER_LIVES, RESPAWN_SECONDS, SCORE } from '@/data/waves';
 import type { Hittable } from '@/combat/Hitscan';
@@ -38,7 +38,7 @@ export class Game {
   private readonly player: Player;
   private readonly bots: Bot[] = [];
   private readonly packs: HealthPack[] = [];
-  private projectiles: FlashGrenade[] = [];
+  private projectiles: Projectile[] = [];
   private readonly waves: WaveManager;
   private readonly ctx: GameContext;
 
@@ -290,7 +290,7 @@ export class Game {
       ['명중률', `${acc}%`],
       ['헤드샷 비율', `${hsr}%`],
       ['최대 연속 처치', String(s.maxStreak)],
-      ['블링크 / 섬광탄 / 궁', `${s.blinks} / ${s.flashes} / ${s.ults}`],
+      ['펄스 로켓 / 치유 필드 / 궁', `${s.rockets} / ${s.fields} / ${s.ults}`],
       ['플레이 시간', `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`],
     ]);
     this.hud.showOverlay('ov-end');

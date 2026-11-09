@@ -183,6 +183,34 @@ export class SynthSfx {
     this.tone(dst, t, 'square', 600 * rate, 220 * rate, 0.05, 0.1 * vol, { lp: [1200, 500] });
   }
 
+  /** 펄스 로켓 발사: 둔탁한 '퉁' + 분사 휙 + 지글거림 */
+  rocketFire(): void {
+    const t = this.ctx.currentTime;
+    this.tone(this.bus, t, 'sine', 140, 55, 0.2, 0.9, { attack: 0.003 });
+    this.noise(this.bus, t, 0.012, 0.6, { hp: 2000 });
+    this.noise(this.bus, t, 0.34, 0.38, { bp: [900, 2800, 1.1], attack: 0.008, curve: 'lin' });
+    this.noise(this.bus, t + 0.02, 0.26, 0.1, { hp: 3500, curve: 'lin' });
+    this.tone(this.bus, t, 'square', 320, 760, 0.12, 0.07, { lp: [1600, 900] });
+  }
+
+  /** 펄스 로켓 폭발 (3D): 크랙 + 붐 + 서브 + 파편 클릭 */
+  rocketExplode(dst: AudioNode = this.bus, vol = 1): void {
+    const t = this.ctx.currentTime;
+    this.noise(dst, t, 0.02, 0.9 * vol, { hp: 1500 });
+    this.noise(dst, t, 0.42, 0.75 * vol, { lp: [1100, 110], attack: 0.003 });
+    this.tone(dst, t, 'sine', 115, 34, 0.5, 1.0 * vol, { attack: 0.004 });
+    for (const dt of [0.06, 0.11, 0.19]) this.click(dst, t + dt, 0.12 * vol, 2400 + Math.random() * 1500, 0.008);
+  }
+
+  /** 치유 필드 설치: 착지 '톡' + 따뜻한 화음 + 상승 반짝임 */
+  healField(): void {
+    const t = this.ctx.currentTime;
+    this.click(this.bus, t, 0.35, 1800, 0.012);
+    this.tone(this.bus, t, 'sine', 210, 120, 0.12, 0.45, { attack: 0.003 });
+    for (const f of [392, 494, 587]) this.tone(this.bus, t + 0.05, 'triangle', f, f, 0.9, 0.07, { attack: 0.08, lp: [1600, 700], curve: 'lin' });
+    for (const [i, f] of [784, 988, 1175, 1568].entries()) this.tone(this.bus, t + 0.08 + i * 0.06, 'sine', f, f, 0.25, 0.12, { attack: 0.005 });
+  }
+
   /** 명중 틱 */
   hit(): void {
     const t = this.ctx.currentTime;

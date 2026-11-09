@@ -22,11 +22,14 @@ export interface WeaponDef {
 }
 
 export interface RavenAbilities {
-  blink: { range: number; cooldown: number; duration: number };
   /** 달리기(Shift 유지): 속도 배율, 탄퍼짐 추가(deg), FOV 추가 */
   sprint: { speedMult: number; spreadAdd: number; fovAdd: number };
-  flash: { cooldown: number; speed: number; fuse: number; radius: number; blindDuration: number };
-  ult: { duration: number; fireRateMult: number; speedMult: number; chargeNeeded: number; chargePerDamage: number; chargePerSecond: number };
+  /** 펄스 로켓(우클릭): 직격 + 스플래시(중심 100% → 가장자리 50%) */
+  rocket: { cooldown: number; speed: number; directDamage: number; splashDamage: number; radius: number; range: number };
+  /** 치유 필드(E): 설치형 회복 구역 */
+  field: { cooldown: number; duration: number; radius: number; hps: number };
+  /** 전술 조준(Q): 지속 시간 동안 화면 안의 적 자동 조준 */
+  ult: { duration: number; chargeNeeded: number; chargePerDamage: number; chargePerSecond: number };
 }
 
 export interface HeroDef {
@@ -64,10 +67,10 @@ export const RAVEN: HeroDef = {
     headshotMult: 2,
   },
   abilities: {
-    blink: { range: 8, cooldown: 5, duration: 0.12 },
-    sprint: { speedMult: 1.4, spreadAdd: 1.5, fovAdd: 6 },
-    flash: { cooldown: 10, speed: 22, fuse: 1.5, radius: 5, blindDuration: 2 },
-    ult: { duration: 8, fireRateMult: 1.5, speedMult: 1.3, chargeNeeded: 100, chargePerDamage: 0.25, chargePerSecond: 1 },
+    sprint: { speedMult: 1.5, spreadAdd: 1.5, fovAdd: 6 },
+    rocket: { cooldown: 6, speed: 50, directDamage: 40, splashDamage: 80, radius: 3, range: 70 },
+    field: { cooldown: 15, duration: 5, radius: 4.5, hps: 35 },
+    ult: { duration: 6, chargeNeeded: 100, chargePerDamage: 0.25, chargePerSecond: 1 },
   },
 };
 
