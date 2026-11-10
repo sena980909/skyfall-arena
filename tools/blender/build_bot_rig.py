@@ -134,6 +134,7 @@ ARM_LAYOUT = {}      # sfx → 팔 레스트 배치(arm_rest)
 ARM_SOLVE_REST = {}  # 팔 본 → 레스트(총을 든) 자세의 solve 변환
 GRIP = {}            # sfx → (손 프레임(총 로컬), 손가락 굽힘, 엄지)
 ARM_PARTS = [f'{p}.{s}' for s in 'LR' for p in ('upper', 'fore', 'hand')]
+GUN_MARK = 'GUNPART'
 
 
 def arm_group(b):
@@ -149,7 +150,12 @@ def arm_group(b):
 
 def build_arms_and_gun():
     gun_bone = 'armsgun' if MODE == 'bot' else 'gun'
+    n_before = len(L.PARTS)
     R.build_rifle(D_GUN, gun=gun_bone, mag=gun_bone)
+    # Mark the rifle's parts (weight below the bone weights, so it never counts as a bone): the detail swap uses the
+    # mark to tell the rifle from the right arm, which shares the 'gun' bone in first person.
+    for ob in L.PARTS[n_before:]:
+        ob.vertex_groups.new(name=GUN_MARK).add(range(len(ob.data.vertices)), 0.5, 'REPLACE')
     arm_mats = {'suit': M['suit'], 'glove': M['dark'], 'armor': M['armor'], 'trim': M['trim'], 'glow': M['glow']}
     grip_r = A.hand_frame(R.GRIP_CENTER + Vector((0.036, -0.012, 0.012)), (0.0, 1.0, -0.12), (1.0, 0.0, 0.0))
     hold = Vector((0.0, (430 - 285) * R.S, (140 - 214) * R.S))
@@ -231,6 +237,9 @@ L.box_uv(mesh_ob, 0.45)
 # 힉스필드 상세 메시가 있으면 겉모습을 그것으로 바꾼다(본·애니메이션은 그대로). 인자에 no_detail을 주면 절차 모델로 빌드
 DETAIL = os.path.join(PROJECT, 'assets_src', 'higgs', 'fp_arms_detail.glb' if MODE == 'fp' else 'bot_detail.glb')
 USE_DETAIL = os.path.exists(DETAIL) and 'no_detail' not in argv
+GUN_DETAIL = os.path.join(PROJECT, 'assets_src', 'higgs', 'rifle_detail.glb')
+USE_GUN = MODE == 'fp' and USE_DETAIL and os.path.exists(GUN_DETAIL) and 'no_gun' not in argv
+GUN_OB = None
 if USE_DETAIL:
     import bot_detail as BD  # noqa: E402
     if MODE == 'player':
@@ -245,11 +254,20 @@ if USE_DETAIL:
         # 상완은 버리고(화면 귀퉁이에 보인다), 왼팔(전완+손)은 총에서 잘라 따로 움직이게 한다. 오른팔은 총과 한 덩어리(gun 본)로 둔다
         FP_PART = {'upper.L': 'DROP', 'upper.R': 'DROP', 'fore.L': 'LL', 'hand.L': 'LL'}
         mesh_ob = BD.swap_in(mesh_ob, DETAIL, tex_size=2048, aux_tex_size=1024, visor_material=None, align_mode='object',
-                             part_of=lambda b: FP_PART.get(b, 'RG'), joined=set(), keep_parts={'LL', 'RG'}, weld=True)
+                             part_of=lambda b: FP_PART.get(b, 'RG'), joined=set(), keep_parts={'LL', 'RG'}, weld=True,
+                             plane_cuts={'upper.L': 'fore.L', 'upper.R': 'gun'},
+                             strip=GUN_MARK if USE_GUN else None)
+        if USE_GUN:
+            # The rifle generated on its own (one clean rear three-quarter picture, 150k faces) replaces the rifle part of
+            # the arms-and-rifle mesh: fused with the arms it came out lumpy, worst from the shooter's side.
+            GUN_OB = BD.fit_prop(GUN_DETAIL, 'gun_prop', 'gun', BD.swap_in.stripped, tex_size=2048, max_tris=55000, thin_end=D_GUN @ R.MUZZLE, drop=0.012,
+                                 uv_name=mesh_ob.data.uv_layers[0].name if mesh_ob.data.uv_layers else None)
     else:
         mesh_ob = BD.swap_in(mesh_ob, DETAIL)
     L.PARTS.clear()
     L.PARTS.append(mesh_ob)
+    if GUN_OB is not None:
+        L.PARTS.append(GUN_OB)
 if MODE in ('player', 'fp'):
     # 재장전 때 빠졌다 들어가는 탄창. 평소에는 총의 탄창 안에 숨어 있다(상세 메시의 탄창은 총과 한 덩어리라 따로 못 뺀다)
     MAG_DETAIL = os.path.join(PROJECT, 'assets_src', 'higgs', 'mag_detail.glb')
@@ -262,6 +280,8 @@ if MODE in ('player', 'fp'):
         L.box('mag_prop', D_GUN @ R.MAG_CENTER, (0.034, 0.10, 0.10), L.material('player_mag', (0.03, 0.035, 0.045), rough=0.5, metal=0.5), 'mag', bevel=0.006)
         L.box('mag_prop_glow', D_GUN @ (R.MAG_CENTER + Vector((0, 0, -0.01))), (0.036, 0.07, 0.012), L.material('player_mag_glow', (0.05, 0.3, 0.4), rough=0.3, emit=(0.2, 0.85, 1.0), emit_strength=2.0), 'mag', bevel=0.002)
     mesh_ob = L.join_parts('BotMesh')
+if GUN_MARK in mesh_ob.vertex_groups:
+    mesh_ob.vertex_groups.remove(mesh_ob.vertex_groups[GUN_MARK])
 print('TRIS', sum(len(p.vertices) - 2 for p in mesh_ob.data.polygons), 'VERTS', len(mesh_ob.data.vertices), 'MATS', len(mesh_ob.data.materials))
 
 arm_data = bpy.data.armatures.new('BotRig')

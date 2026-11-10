@@ -361,7 +361,7 @@ export class Player implements Hittable, Healable {
           const sm = mat as MeshStandardMaterial;
           sm.envMapIntensity = 0.3;
           // Cap faces keep their own plain material. The magazine is a generated mesh like the gun and gets the same surface.
-          if (sm.name !== 'bot_detail' && sm.name !== 'mag_detail') continue;
+          if (sm.name !== 'bot_detail' && sm.name !== 'mag_detail' && sm.name !== 'gun_detail') continue;
           // The generated roughness/metal maps are near-mirror (roughness ~0.17), which reads as wet chrome up close.
           // Use a painted hard-surface look instead and keep only the normal map.
           sm.metalnessMap = null;

@@ -200,7 +200,7 @@ def _clean_parts(bm, fbone, part_of):
     print('DETAIL_CLEANED_FACES', moved)
 
 
-def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_visor', part_of=None, joined=None, keep_parts=None, aux_tex_size=None, align_mode='body', weld=False):
+def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_visor', part_of=None, joined=None, keep_parts=None, aux_tex_size=None, align_mode='body', weld=False, plane_cuts=None, strip=None):
     """절차 메시 proc(정점 그룹 = 본, 정점당 하나)을 상세 메시로 바꿔 돌려준다. proc는 지운다.
 
     part_of(본 이름) → 덩어리 이름, joined = 이어져 있어도 되는 덩어리 쌍의 집합을 주면,
@@ -214,7 +214,7 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
     gname = {g.index: g.name for g in proc.vertex_groups}
     vbone = []
     for v in pm.vertices:
-        gs = sorted(v.groups, key=lambda g: -g.weight)
+        gs = sorted((g for g in v.groups if gname[g.group] != strip), key=lambda g: -g.weight)
         vbone.append(gname[gs[0].group] if gs else None)
     face_bone = [vbone[p.vertices[0]] for p in pm.polygons]
     face_mat = [pm.materials[p.material_index].name if pm.materials else '' for p in pm.polygons]
@@ -232,11 +232,81 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
         n0 = len(bm.verts)
         bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2e-5)
         print('DETAIL_WELDED', n0, '->', len(bm.verts))
+    cut_bones = {}
+    if plane_cuts:
+        # Cut limbs off with a flat plane instead of by the inherited face labels. The labels have a ragged border, so
+        # dropping 'upper arm' faces by label left torn spikes around the elbow. plane_cuts = {bone to remove: bone that
+        # takes over the faces left on the kept side}. The plane sits at the end of that bone nearest the rest of the model.
+        import numpy as np
+        allp = np.array([q[:] for q in proc_pts])
+        centre = allp.mean(axis=0)
+        for bone, heir in plane_cuts.items():
+            up = np.array([proc_pts[i][:] for i, b in enumerate(vbone) if b == bone])
+            if len(up) < 8:
+                continue
+            c = up.mean(axis=0)
+            axis = np.linalg.svd(up - c, full_matrices=False)[2][0]
+            if np.dot(c - centre, axis) < 0:
+                axis = -axis
+            t = (up - c) @ axis
+            rad = float(np.linalg.norm((up - c) - np.outer(t, axis), axis=1).max())
+            o = Vector(c + axis * float(t.min()))
+            a = Vector(axis)
+
+            def beyond(f, o=o, a=a, rad=rad, bone=bone):
+                # How far the face lies past the plane, or None when it is not part of this limb: faces labelled with
+                # the limb's bone within 1.7 radii of its axis, and anything within 1.15 radii (stray labels).
+                pt = f.calc_center_median()
+                d = pt - o
+                along = d.dot(a)
+                off = (d - a * along).length
+                if not (-rad < along < 0.7) or off > rad * 1.7:
+                    return None
+                if off > rad * 1.15 and face_bone[tree.find_nearest(pt)[2]] != bone:
+                    return None
+                return along
+
+            faces = [f for f in bm.faces if beyond(f) is not None]
+            geom = set(faces)
+            for f in faces:
+                geom.update(f.edges)
+                geom.update(f.verts)
+            bmesh.ops.bisect_plane(bm, geom=list(geom), dist=1e-6, plane_co=o, plane_no=a, clear_outer=False, clear_inner=False)
+            drop = [f for f in bm.faces if (beyond(f) or -1.0) > 1e-6]
+            bmesh.ops.delete(bm, geom=drop, context='FACES')
+            cut_bones[bone] = heir
+            print('PLANE_CUT', bone, '->', heir, 'radius', round(rad, 3), 'dropped faces', len(drop))
+    swap_in.stripped = None
+    if strip:
+        # Remove one piece of the generated mesh so a separately generated model can take its place (the rifle, which
+        # comes out far cleaner when generated on its own than fused with the arms). strip = name of a marker vertex
+        # group on the procedural mesh: procedural faces whose vertices all carry it are the piece, and a generated
+        # face belongs to the piece when its nearest procedural face does.
+        marked = {v.index for v in pm.vertices if any(gname[g.group] == strip for g in v.groups)}
+        piece = [all(i in marked for i in poly) for poly in polys]
+        flag = {f: piece[tree.find_nearest(f.calc_center_median())[2]] for f in bm.faces}
+        for _ in range(3):
+            change = {}
+            for f in bm.faces:
+                near = [flag[g] for e in f.edges for g in e.link_faces if g is not f]
+                if len(near) >= 2 and sum(1 for x in near if x != flag[f]) >= 2 and sum(near) * 2 != len(near):
+                    change[f] = sum(near) * 2 > len(near)
+            flag.update(change)
+        gone = [f for f in bm.faces if flag[f]]
+        vid = {}
+        tris = []
+        for f in gone:
+            tris.append([vid.setdefault(v, len(vid)) for v in f.verts])
+        swap_in.stripped = ([v.co.copy() for v in vid], tris)
+        bmesh.ops.delete(bm, geom=gone, context='FACES')
+        loose = [v for v in bm.verts if not v.link_faces]
+        bmesh.ops.delete(bm, geom=loose, context='VERTS')
+        print('STRIPPED faces', len(gone), 'left', len(bm.faces))
     bm.faces.ensure_lookup_table()
     fbone = {}
     for f in bm.faces:
         hit = tree.find_nearest(f.calc_center_median())
-        fbone[f] = face_bone[hit[2]]
+        fbone[f] = cut_bones.get(face_bone[hit[2]], face_bone[hit[2]])
     cap_idx = 2 if visor_material else 1
     caps = 0
     if part_of is not None:
@@ -388,6 +458,88 @@ def _import_generated(path, name, material_name, tex_size, metal, rough):
         if img not in imgs_before and (img.size[0] > tex_size or img.size[1] > tex_size):
             print('PROP_TEX', img.name, tuple(img.size), '->', tex_size)
             img.scale(tex_size, tex_size)
+    return ob
+
+
+def _icp_rigid(ob, tree, iters=30):
+    """Fine fit of a mesh onto a target surface: rotation and translation only, ignoring the worst-matching fifth of the
+    sample (the two models never agree everywhere)."""
+    import numpy as np
+    me = ob.data
+    P = np.array([v.co[:] for v in me.vertices], dtype=np.float64)
+    S0 = P[::max(1, len(P) // 4000)]
+    M = np.eye(4)
+    err = 0.0
+    for _ in range(iters):
+        S = S0 @ M[:3, :3].T + M[:3, 3]
+        H = np.array([tree.find_nearest(Vector(q))[0][:] for q in S])
+        d = np.linalg.norm(H - S, axis=1)
+        keep = d <= np.percentile(d, 80)
+        err = float(d[keep].mean())
+        cs, ch = S[keep].mean(axis=0), H[keep].mean(axis=0)
+        U, _, Vt = np.linalg.svd((S[keep] - cs).T @ (H[keep] - ch))
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            Vt[-1] *= -1
+            R = Vt.T @ U.T
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = ch - R @ cs
+        M = T @ M
+    me.transform(Matrix(M.tolist()))
+    me.update()
+    return err
+
+
+def fit_prop(path, name, group, target, tex_size=2048, material_name='gun_detail', uv_name=None, metal=0.35, rough=0.5, max_tris=0, thin_end=None, drop=0.0):
+    """A separately generated model put where a stripped piece was (see swap_in(strip=...)): target = (points, triangles)
+    of the removed surface. Fitted by box, then scale and position, then a rigid fine fit; bound to one bone."""
+    imgs_before = set(bpy.data.images)
+    ob = _import_generated(path, name, material_name, tex_size, metal, rough)
+    # Colour keeps tex_size; the normal map (and the unused ORM map) go down one more step
+    for img in bpy.data.images:
+        if img not in imgs_before and not img.name.startswith('Color') and img.size[0] > tex_size // 2:
+            img.scale(tex_size // 2, tex_size // 2)
+    tris = sum(len(q.vertices) - 2 for q in ob.data.polygons)
+    if max_tris and tris > max_tris:
+        mod = ob.modifiers.new('dec', 'DECIMATE')
+        mod.ratio = max_tris / tris
+        with bpy.context.temp_override(object=ob, active_object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+    pts, polys = target
+    tree = BVHTree.FromPolygons(pts, polys)
+    _align_object(ob, pts, tree)
+    err = _icp_rigid(ob, tree)
+    if thin_end is not None:
+        # A rifle fits its old shape almost as well back to front (the two yaws tie to a tenth of a millimetre), so
+        # settle it by shape: the slim end (the barrel) must be the one nearer thin_end (the muzzle point).
+        cos = [v.co for v in ob.data.vertices]
+        lo, hi = _bbox(cos)
+        ax = 0 if (hi.x - lo.x) > (hi.y - lo.y) else 1
+        span = hi[ax] - lo[ax]
+        ends = []
+        for sel in (lambda c: c[ax] < lo[ax] + span * 0.1, lambda c: c[ax] > hi[ax] - span * 0.1):
+            part = [c for c in cos if sel(c)]
+            ends.append((max(c.z for c in part) - min(c.z for c in part), sum(part, Vector()) / len(part)))
+        thin = min(ends, key=lambda e: e[0])[1]
+        thick = max(ends, key=lambda e: e[0])[1]
+        if (thin - thin_end).length > (thick - thin_end).length:
+            mid = (lo + hi) * 0.5
+            ob.data.transform(Matrix.Translation(mid) @ Matrix.Rotation(math.pi, 4, 'Z') @ Matrix.Translation(-mid))
+            ob.data.update()
+            err = _icp_rigid(ob, tree)
+            print('FIT_PROP', name, 'turned end for end')
+    if drop:
+        # Lower the model a little: this rifle is taller than the old one and its sight crept into the crosshair area
+        # after two seconds of continuous fire (the recoil climb).
+        ob.data.transform(Matrix.Translation((0, 0, -drop)))
+        ob.data.update()
+    ob.vertex_groups.clear()
+    ob.vertex_groups.new(name=group).add(range(len(ob.data.vertices)), 1.0, 'REPLACE')
+    if uv_name and ob.data.uv_layers:
+        ob.data.uv_layers[0].name = uv_name
+    lo, hi = _bbox([v.co for v in ob.data.vertices])
+    print('FIT_PROP', name, 'TRIS', sum(len(q.vertices) - 2 for q in ob.data.polygons), 'fit mm', round(err * 1000, 1), 'DIM', tuple(round(x, 3) for x in (hi - lo)))
     return ob
 
 
