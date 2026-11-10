@@ -205,8 +205,8 @@ export class Bot implements Hittable, Healable {
   private readonly ikQ2 = new Quaternion();
   /** 견장·전완 장갑 확대용 본 (생성 모델은 컨셉/1인칭 팔보다 어깨·전완이 작게 나왔다) */
   private readonly bulkBones: { sh: Object3D; arm: Object3D; fore: Object3D; hand: Object3D }[] = [];
-  private static readonly BULK_SHOULDER = 1.35;
-  private static readonly BULK_FOREARM = 1.3;
+  private static readonly BULK_SHOULDER = 1;
+  private static readonly BULK_FOREARM = 1;
   private rifleKick = 0;
   private stepTimer = 0;
   /** 0 = 총구를 내린 이동 자세(로우레디), 1 = 조준 */
@@ -379,13 +379,17 @@ export class Bot implements Hittable, Healable {
   }
 
   /** 저격병의 긴 총열(총구 뼈에 붙인다. 뼈 공간은 +Y가 앞)과 조준선 메시(봇 그룹의 자식, 길이는 z 배율로 맞춘다) */
-  private addMarksmanKit(): void {
+  private addMarksmanKit(alongZ = false): void {
     if (this.rifleMuzzle) {
       const barrel = new Mesh(new CylinderGeometry(0.016, 0.02, BARREL_LEN, 8), new MeshStandardMaterial({ color: 0x15171c, roughness: 0.45, metalness: 0.6 }));
       barrel.position.y = BARREL_LEN / 2;
       const tip = new Mesh(new CylinderGeometry(0.03, 0.03, 0.07, 8), new MeshStandardMaterial({ color: 0x1a0612, emissive: this.def.visor, emissiveIntensity: 1.6 }));
       tip.position.y = BARREL_LEN;
-      this.rifleMuzzle.add(barrel, tip);
+      // 힉스필드 리깅 모델은 총구 지점의 앞이 -Z다(총을 정렬한 묶음의 축): 총열을 그쪽으로 눕힌다
+      const kit = new Group();
+      kit.add(barrel, tip);
+      if (alongZ) kit.rotation.x = -Math.PI / 2;
+      this.rifleMuzzle.add(kit);
     }
     const geo = new BoxGeometry(0.022, 0.022, 1);
     geo.translate(0, 0, 0.5);
@@ -470,17 +474,27 @@ export class Bot implements Hittable, Healable {
     bbox = measure();
     const center = bbox.getCenter(new Vector3());
     model.position.set(-center.x, -bbox.min.y, -center.z);
-    const tint = new Color(this.isBoss ? 0xff2a2a : 0xff6a3a);
     model.traverse((o) => {
       const m = o as Mesh;
       if (!m.isMesh) return;
       const mats = Array.isArray(m.material) ? m.material : [m.material];
       const tinted = mats.map((orig) => {
         const mm = (orig as MeshStandardMaterial).clone();
-        // 팀 가독성: 봇은 확실한 주황/빨강 계열로 (원본 텍스처는 명암만 남김)
-        mm.color.copy(tint).multiplyScalar(this.isBoss ? 1.0 : 1.05);
+        // 생성 모델은 텍스처에 색이 들어 있다(주황 갑옷). 보스는 붉게 물들이고, 종류별로는 색 채널을 돌려 색상을 바꾼다.
+        // 생성된 거칠기·금속 지도는 거울에 가까워 쓰지 않는다
+        mm.metalnessMap = null;
+        mm.roughnessMap = null;
+        mm.aoMap = null;
+        mm.metalness = 0.3;
+        mm.roughness = 0.6;
+        mm.envMapIntensity = 0.4;
+        if (this.isBoss) mm.color.setRGB(1.0, 0.42, 0.42);
+        else {
+          if (this.def.hue) applyHueSwap(mm, this.def.hue);
+          if (this.def.tint) mm.color.setRGB(...this.def.tint);
+        }
         mm.emissive = new Color(0x000000);
-        mm.roughness = Math.min(1, (mm.roughness ?? 0.8) + 0.1);
+        mm.emissiveIntensity = 1;
         this.skinMats.push(mm);
         return mm;
       });
@@ -497,6 +511,7 @@ export class Bot implements Hittable, Healable {
     this.group.add(model);
     this.collectPoseBones(model);
     this.attachRifle(model);
+    if (this.def.shot) this.addMarksmanKit(true);
     if (Object.keys(clips).length) {
       this.mixer = new AnimationMixer(model);
       for (const [name, clip] of Object.entries(clips)) {
@@ -550,17 +565,20 @@ export class Bot implements Hittable, Healable {
     mz.position.z -= shift;
     holder.add(mz);
     this.rifleMuzzle = mz;
-    // 팀 색 틴트 (플레이어 파랑과 구분)
-    const tint = new Color(this.isBoss ? 0xff3030 : 0xff7a3a);
+    // 적의 총은 주인공의 총과 같은 모델이다. 파란 판이 주황으로 보이게 색 채널을 바꾼다(플레이어 파랑과 구분)
     rifle.traverse((o) => {
       const m = o as Mesh;
       if (!m.isMesh) return;
       const mats = Array.isArray(m.material) ? m.material : [m.material];
       m.material = mats.map((orig) => {
         const mm = (orig as MeshStandardMaterial).clone();
-        mm.color.lerp(tint, 0.7);
-        if (mm.emissive) mm.emissive.copy(tint).multiplyScalar(0.35);
-        mm.emissiveIntensity = 1;
+        mm.metalnessMap = null;
+        mm.roughnessMap = null;
+        mm.metalness = 0.3;
+        mm.roughness = 0.55;
+        mm.envMapIntensity = 0.4;
+        applyHueSwap(mm, 'bgr');
+        if (this.isBoss) mm.color.setRGB(1.0, 0.5, 0.5);
         return mm;
       }) as unknown as MeshStandardMaterial;
       if (!Array.isArray(m.material) || m.material.length === 1) m.material = (m.material as unknown as MeshStandardMaterial[])[0];
@@ -1373,7 +1391,7 @@ export class Bot implements Hittable, Healable {
     const res = hitscan(this.eye, dir, shot.range, ctx.map.meshes, ctx.hittables(), this);
     const muzzle = this.muzzlePoint(this.tmp, dir);
     ctx.fx.bolt(muzzle, res.point, this.def.bolt, 0xffffff, 8, 320, res.normal, 9);
-    ctx.fx.muzzleSprite(muzzle, 0.4);
+    ctx.fx.muzzleSprite(muzzle, 0.4, dir, this.def.bolt);
     ctx.sfx.shootFar(0.6, muzzle);
     if (res.target === ctx.player) {
       ctx.player.takeDamage({ amount: Math.max(1, Math.round(shot.damage * ctx.difficulty.damageMult)), headshot: false, from: this.ctrl.pos, attacker: this });
@@ -1396,7 +1414,7 @@ export class Bot implements Hittable, Healable {
     const res = hitscan(this.eye, dir, this.weapon.def.range, ctx.map.meshes, ctx.hittables(), this);
     const muzzle = this.muzzlePoint(this.tmp, dir);
     ctx.fx.bolt(muzzle, res.point, this.isBoss ? 0xff4040 : this.def.bolt, res.target === ctx.player ? 0xff4040 : 0xffb27a, res.target ? 4 : 2, 140, res.normal, 3);
-    ctx.fx.muzzleSprite(muzzle, 0.22);
+    ctx.fx.muzzleSprite(muzzle, 0.22, dir, this.isBoss ? 0xff4040 : this.def.bolt);
     const distToPlayer = this.ctrl.pos.distanceTo(ctx.player.position);
     ctx.sfx.shootFar(Math.max(0.05, 0.35 - distToPlayer * 0.006), muzzle);
     if (res.target === ctx.player) {

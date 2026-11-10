@@ -815,7 +815,7 @@ export class Player implements Hittable, Healable {
     this.fxMuzzlePosition(this.tmp);
     const dir = aim.clone().sub(this.tmp).normalize();
     ctx.spawnProjectile(new PulseRocket(ctx, this.tmp.clone(), dir, this, (h) => this.onRocketHit(h)));
-    ctx.fx.muzzleSprite(this.tmp, 0.28);
+    ctx.fx.muzzleSprite(this.tmp, 0.28, dir);
     ctx.fx.muzzleFlash(6);
     ctx.sfx.rocketFire();
     ctx.onNoise(this.ctrl.pos, 30);
@@ -913,7 +913,7 @@ export class Player implements Hittable, Healable {
     const hitColor = res.target ? 0xff7a4a : 0xffd27a;
     ctx.fx.bolt(this.tmp, res.point, this.ultActive ? 0xffd9a0 : 0x8ec5ff, hitColor, res.target ? 6 : 3, 150, res.normal, 9);
     ctx.fx.muzzleFlash(3.5);
-    ctx.fx.muzzleSprite(this.tmp, 0.26);
+    ctx.fx.muzzleSprite(this.tmp, 0.26, res.point.clone().sub(this.tmp).normalize(), this.ultActive ? 0xffd9a0 : 0xbfe6ff);
     ctx.sfx.shoot();
     ctx.onNoise(this.ctrl.pos, 25);
 

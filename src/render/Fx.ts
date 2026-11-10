@@ -1,7 +1,7 @@
 import { copyHueSwap } from '@/render/HueSwap';
 import {
   AdditiveBlending, BufferGeometry, CanvasTexture, Color, DoubleSide, Float32BufferAttribute, Line, LineBasicMaterial,
-  Mesh, MeshBasicMaterial, Object3D, PlaneGeometry, PointLight, Scene, Sprite, SpriteMaterial, Texture, Vector3,
+  Mesh, MeshBasicMaterial, Object3D, PlaneGeometry, PointLight, Scene, Sprite, SpriteMaterial, SRGBColorSpace, Texture, Vector3,
 } from 'three';
 import type { VfxTextures } from '@/core/Assets';
 
@@ -16,14 +16,23 @@ interface Bolt {
   glow: Sprite; core: Sprite;
   color: number; from: Vector3; to: Vector3; dir: Vector3; dist: number; len: number; t: number; speed: number;
   hitColor: number; sparkCount: number; normal: Vector3 | null;
+  /** 꼬리가 띠가 아니라 입체 탄 모델인가 */
+  solid: boolean;
   /** 만든 뒤 아직 한 번도 그려지지 않음 */
   fresh: boolean;
 }
+/** 힉스필드에서 받은 이펙트 모델 셋: 총구 화염, 날아가는 탄, 맞은 자리의 섬광 */
+export interface FxModels { flash: Object3D | null; bolt: Object3D | null; impact: Object3D | null }
+/** 잠깐 나타났다 사라지는 입체 이펙트 하나(크기가 s0에서 s1로 커지며 흐려진다) */
+interface Shape { mesh: Mesh; mat: MeshBasicMaterial; dieAt: number; life: number; s0: number; s1: number }
+type ShapeKind = 'flash' | 'bolt' | 'impact';
 interface Decal { mesh: Mesh; mat: MeshBasicMaterial; glow: Mesh; glowMat: MeshBasicMaterial; born: number }
 /** 탄흔 최대 개수(넘으면 가장 오래된 것부터 재사용), 유지 시간, 달아오른 자국이 식는 시간 */
 /** 탄환 꼬리의 최대 폭(m)과, 화면에 보이는 길이 대비 폭의 상한 */
 const BOLT_WIDTH = 0.09;
 const BOLT_ASPECT = 0.22;
+/** 입체 탄의 굵기 배율 상한(모델은 길이 1에 굵기 약 0.3) */
+const BOLT_GIRTH = 0.5;
 /** 탄환 머리 빛의 크기(m)와, 멀어져도 유지하는 최소 겉보기 크기(거리당) */
 const BOLT_HEAD = 0.26;
 const BOLT_HEAD_PER_M = 0.02;
@@ -52,6 +61,10 @@ export class Fx {
   private readonly dotTex: CanvasTexture;
   private readonly trailTex: CanvasTexture;
   private vfx: VfxTextures | null = null;
+  /** 입체 이펙트: 모델에서 꺼낸 모양과 밝기 그림(색은 쓸 때 입힌다) */
+  private shapeGeo: Partial<Record<ShapeKind, BufferGeometry>> = {};
+  private shapeTex: Partial<Record<ShapeKind, Texture>> = {};
+  private shapes: Shape[] = [];
   private impacts: ImpactAnim[] = [];
   private decals: Decal[] = [];
   private decalNext = 0;
@@ -81,6 +94,121 @@ export class Fx {
   /** 힉스필드 생성 VFX 텍스처 적용 (없는 항목은 절차적 효과 유지) */
   setTextures(vfx: VfxTextures): void {
     this.vfx = vfx;
+  }
+
+  /**
+   * 힉스필드에서 받은 이펙트 모델 적용. 모양은 받은 그대로 쓰고, 여기서는 방향과 크기만 맞춘다:
+   *  flash  = 길이 1, 밑동이 원점, 뾰족한 끝이 +Z(쏘는 방향)
+   *  bolt   = 길이 1, 가운데가 원점, 굵은 머리가 +Z(날아가는 방향)
+   *  impact = 지름 1, 가운데가 원점
+   * 색은 모델의 그림을 밝기만 남겨 쓰고 쏘는 쪽 색을 곱한다(내 탄은 파랑, 적은 주황·초록·자홍).
+   */
+  setModels(models: FxModels): void {
+    for (const kind of ['flash', 'bolt', 'impact'] as ShapeKind[]) {
+      const model = models[kind];
+      if (!model) continue;
+      model.updateMatrixWorld(true);
+      const found: Mesh[] = [];
+      model.traverse((o) => {
+        if ((o as Mesh).isMesh) found.push(o as Mesh);
+      });
+      const mesh = found[0];
+      if (!mesh) continue;
+      const geo = mesh.geometry.clone();
+      geo.applyMatrix4(mesh.matrixWorld);
+      geo.computeBoundingBox();
+      const size = geo.boundingBox!.getSize(new Vector3());
+      if (kind !== 'impact') {
+        // 가장 긴 축을 Z로
+        if (size.x >= size.y && size.x >= size.z) geo.rotateY(Math.PI / 2);
+        else if (size.y >= size.x && size.y >= size.z) geo.rotateX(Math.PI / 2);
+        geo.computeBoundingBox();
+        const box = geo.boundingBox!;
+        const len = box.max.z - box.min.z;
+        const cx = (box.min.x + box.max.x) / 2;
+        const cy = (box.min.y + box.max.y) / 2;
+        // 양 끝 12% 구간의 굵기: 섬광은 가는 끝이, 탄은 굵은 끝이 +Z
+        const pos = geo.attributes.position;
+        let rLo = 0;
+        let rHi = 0;
+        for (let i = 0; i < pos.count; i++) {
+          const z = pos.getZ(i);
+          const r = Math.hypot(pos.getX(i) - cx, pos.getY(i) - cy);
+          if (z < box.min.z + len * 0.12) rLo = Math.max(rLo, r);
+          else if (z > box.max.z - len * 0.12) rHi = Math.max(rHi, r);
+        }
+        if (kind === 'flash' ? rHi > rLo : rHi < rLo) geo.rotateY(Math.PI);
+        geo.computeBoundingBox();
+        const b2 = geo.boundingBox!;
+        geo.translate(-(b2.min.x + b2.max.x) / 2, -(b2.min.y + b2.max.y) / 2, kind === 'flash' ? -b2.min.z : -(b2.min.z + b2.max.z) / 2);
+        geo.scale(1 / len, 1 / len, 1 / len);
+      } else {
+        const c = geo.boundingBox!.getCenter(new Vector3());
+        geo.translate(-c.x, -c.y, -c.z);
+        const k = 1 / Math.max(size.x, size.y, size.z);
+        geo.scale(k, k, k);
+      }
+      this.shapeGeo[kind] = geo;
+      const map = (mesh.material as MeshBasicMaterial).map;
+      if (map?.image) this.shapeTex[kind] = Fx.brightness(map);
+    }
+  }
+
+  /** 그림을 밝기만 남긴 것으로 바꾼다(가장 밝은 성분 기준). 색을 곱해 쓴다 */
+  private static brightness(src: Texture): Texture {
+    const N = 256;
+    const c = document.createElement('canvas');
+    c.width = c.height = N;
+    const g = c.getContext('2d', { willReadFrequently: true })!;
+    g.drawImage(src.image as CanvasImageSource, 0, 0, N, N);
+    const img = g.getImageData(0, 0, N, N);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      // heat: 1 at the white core, about 0.6 on the cyan body, near 0 at the deep blue tips (blue alone says nothing)
+      const heat = (d[i] + d[i + 1]) / 510;
+      const v = 255 * (0.62 + 0.38 * heat);
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    g.putImageData(img, 0, 0);
+    const tex = new CanvasTexture(c);
+    tex.colorSpace = SRGBColorSpace;
+    tex.flipY = src.flipY;
+    return tex;
+  }
+
+  /**
+   * Solid effect material. Not additive: an additive solid over a bright scene burns out to plain white (bloom on
+   * top), and the shape is lost. The model's own shading decides brightness and transparency (bright core opaque,
+   * tips fading), the shooter's colour tints it, and tone mapping is skipped so the colour stays saturated.
+   */
+  private shapeMaterial(kind: ShapeKind, color: number): MeshBasicMaterial {
+    const tex = this.shapeTex[kind] ?? null;
+    const mat = new MeshBasicMaterial({ map: tex, alphaMap: tex, color, transparent: true, opacity: 1, depthWrite: false, side: DoubleSide, toneMapped: false });
+    // Full saturation at a fixed lightness: the pale tints used for the old additive sprites look grey as a solid
+    const hsl = { h: 0, s: 0, l: 0 };
+    mat.color.getHSL(hsl);
+    mat.color.setHSL(hsl.h, 1, 0.6);
+    // Brighter than white on purpose: the post chain is HDR, so this is what makes the bloom pick the shape up
+    mat.color.multiplyScalar(1.6);
+    return mat;
+  }
+
+  /** 입체 이펙트 하나를 놓는다. dir을 주면 +Z가 그쪽을 보고, 없으면 아무 방향으로 돈다 */
+  private shape(kind: ShapeKind, pos: Vector3, dir: Vector3 | null, color: number, s0: number, s1: number, life: number): boolean {
+    const geo = this.shapeGeo[kind];
+    if (!geo) return false;
+    const mat = this.shapeMaterial(kind, color);
+    const mesh = new Mesh(geo, mat);
+    mesh.position.copy(pos);
+    if (dir) {
+      mesh.lookAt(this.tmpV.copy(pos).add(dir));
+      mesh.rotateZ(Math.random() * Math.PI * 2);
+    } else mesh.rotation.set(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28);
+    mesh.scale.setScalar(s0);
+    mesh.frustumCulled = false;
+    this.scene.add(mesh);
+    this.shapes.push({ mesh, mat, dieAt: performance.now() / 1000 + life, life, s0, s1 });
+    return true;
   }
 
   /** 탄환 꼬리 텍스처: 오른쪽(머리)이 밝고 굵으며 왼쪽(꼬리)으로 가늘어지며 사라진다. 가장자리는 전부 투명 */
@@ -162,15 +290,20 @@ export class Fx {
     // 탄환 = 둥근 머리(색 빛 + 흰 중심) + 진행 방향으로 늘어난 꼬리.
     // 머리는 항상 카메라를 보는 원이라 어느 각도에서도 둥글고, 꼬리는 화면에 보이는 길이보다 넓어지지 않는다.
     // 그래서 옆에서 보면 긴 줄, 정면·후면에서 보면 점으로 보인다(진행 방향과 어긋난 줄이 생기지 않는다).
-    const mat = new MeshBasicMaterial({ map: this.trailTex, color, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false, side: DoubleSide });
-    const mesh = new Mesh(this.boltPlaneGeo, mat);
+    // 탄 모델이 있으면 꼬리 띠 대신 입체 탄을 날린다(머리의 빛은 그대로: 먼 탄이 한 픽셀 아래로 사라지지 않게)
+    const solid = !!this.shapeGeo.bolt;
+    const mat = solid
+      ? this.shapeMaterial('bolt', color)
+      : new MeshBasicMaterial({ map: this.trailTex, color, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false, side: DoubleSide });
+    const mesh = new Mesh(solid ? this.shapeGeo.bolt! : this.boltPlaneGeo, mat);
+    mesh.frustumCulled = false;
     const sprite = (c: Color): Sprite => new Sprite(new SpriteMaterial({ map: this.dotTex, color: c, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false }));
     const glow = sprite(new Color(color));
     const core = sprite(new Color(color).lerp(WHITE, 0.8));
     this.scene.add(mesh, glow, core);
     const dir = to.clone().sub(from).normalize();
     // 첫 프레임부터 총구 앞에 반 길이쯤 보이도록 시작
-    const b: Bolt = { mesh, mat, glow, core, color, from: from.clone(), to: to.clone(), dir, dist, len, t: 0.3, speed, hitColor, sparkCount, normal, fresh: true };
+    const b: Bolt = { mesh, mat, glow, core, color, from: from.clone(), to: to.clone(), dir, dist, len, t: 0.3, speed, hitColor, sparkCount, normal, solid, fresh: true };
     this.placeBolt(b);
     this.bolts.push(b);
     if (dist < 1.5) {
@@ -232,7 +365,10 @@ export class Fx {
   }
 
   /** 총구 섬광 스프라이트 (짧게 번쩍) */
-  muzzleSprite(pos: Vector3, size = 0.26): void {
+  muzzleSprite(pos: Vector3, size = 0.26, dir: Vector3 | null = null, color = 0xbfe6ff): void {
+    // 화염 모델이 있고 쏘는 방향을 알면 입체 화염을 총구에서 뿜는다(한 발마다 축을 돌려 놓는다)
+    // The small additive sprite stays as the white-hot centre
+    if (dir && this.shape('flash', pos, dir, color, size * 1.1, size * 1.9, 0.06)) size *= 0.55;
     const tex = this.vfx?.muzzle ?? this.flashTex;
     const mat = new SpriteMaterial({ map: tex, color: this.vfx?.muzzle ? 0xffffff : 0xffe0b0, transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false, rotation: Math.random() * Math.PI * 2 });
     const sprite = new Sprite(mat);
@@ -255,8 +391,10 @@ export class Fx {
 
   sparks(point: Vector3, color: number, count = 5): void {
     const now = performance.now() / 1000;
-    if (this.vfx?.impact) {
-      this.impactSprite(point, color, count >= 5 ? 0.9 : 0.55);
+    const big = count >= 5 ? 0.9 : 0.55;
+    if (this.shape('impact', point, null, color, big * 0.3, big * 0.85, 0.16)) count = Math.max(1, Math.floor(count / 2));
+    else if (this.vfx?.impact) {
+      this.impactSprite(point, color, big);
       count = Math.max(1, Math.floor(count / 2));
     }
     for (let i = 0; i < count; i++) {
@@ -292,6 +430,7 @@ export class Fx {
     this.tracer(far, far2, 0x8ec5ff, 0.3);
     this.sparks(far, 0xffd27a, 2);
     this.muzzleSprite(far);
+    this.muzzleSprite(far, 0.2, new Vector3(0, 0, 1));
     this.flashBurst(far);
     this.rocketExplosion(far);
     this.mote(far, 0xffffff, new Vector3(), 0.1, 0.1);
@@ -425,6 +564,15 @@ export class Fx {
     const tail = Math.max(0, head - b.len);
     const vis = Math.max(0.02, head - tail);
     b.mesh.position.copy(b.from).addScaledVector(b.dir, (head + tail) * 0.5);
+    if (b.solid) {
+      // 입체 탄: 길이는 보이는 구간만큼, 굵기는 길이를 따라가되 BOLT_GIRTH를 넘지 않는다. 날아가며 천천히 돈다
+      const k = Math.min(vis, BOLT_GIRTH);
+      b.mesh.up.set(0, 1, 0);
+      b.mesh.lookAt(this.tmpV2.copy(b.mesh.position).add(b.dir));
+      b.mesh.rotateZ(b.t * 0.35);
+      b.mesh.scale.set(k, k, vis);
+      b.mesh.visible = true;
+    } else {
     // lookAt의 up을 (dir × toCam)으로 주면 띠의 면이 카메라 쪽을 향한다
     this.tmpV.copy(this.camPos).sub(b.mesh.position);
     b.mesh.up.crossVectors(b.dir, this.tmpV);
@@ -436,6 +584,7 @@ export class Fx {
     b.mesh.scale.set(1, Math.max(width, 0.002), vis);
     if (b.mesh.up.lengthSq() < 1e-8) b.mesh.up.set(0, 1, 0);
     b.mesh.lookAt(this.tmpV2.copy(b.mesh.position).add(b.dir));
+    }
     const fadeIn = Math.min(1, tail / 0.4 + 0.5);
     const fadeOut = Math.min(1, (b.dist - b.t) / 2 + 0.2);
     const o = fadeIn * fadeOut;
@@ -477,6 +626,18 @@ export class Fx {
         continue;
       }
       this.placeBolt(b);
+    }
+    for (let i = this.shapes.length - 1; i >= 0; i--) {
+      const sh = this.shapes[i];
+      const r = (sh.dieAt - now) / sh.life;
+      if (r <= 0) {
+        this.scene.remove(sh.mesh);
+        sh.mat.dispose();
+        this.shapes.splice(i, 1);
+        continue;
+      }
+      sh.mesh.scale.setScalar(sh.s0 + (sh.s1 - sh.s0) * (1 - r));
+      sh.mat.opacity = Math.min(1, r * 1.6);
     }
     for (const d of this.decals) {
       if (!d || !d.mesh.visible) continue;
@@ -581,6 +742,8 @@ export class Fx {
   clear(): void {
     for (const b of this.bolts) this.scene.remove(b.mesh, b.glow, b.core);
     for (const f of this.flashes) this.scene.remove(f.sprite);
+    for (const sh of this.shapes) this.scene.remove(sh.mesh);
+    this.shapes = [];
     for (const im of this.impacts) this.scene.remove(im.sprite);
     for (const m of this.motes) this.scene.remove(m.sprite);
     for (const d of this.decals) if (d) d.mesh.visible = false;

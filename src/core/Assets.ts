@@ -5,6 +5,7 @@ import {
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { FpDirectParts } from '@/render/FpDirect';
+import type { FxModels } from '@/render/Fx';
 import { buildKit, KIT_FILES } from '@/world/KitDirect';
 
 export interface CharacterAsset {
@@ -42,6 +43,8 @@ export interface LoadedAssets {
   fpDetail: { scene: Group; clips: AnimationClip[] } | null;
   /** 힉스필드에서 받은 그대로의 1인칭 모델(총, 탄창, 팔). 셋 다 있으면 fpDetail 대신 쓴다(render/FpDirect.ts) */
   fpDirect: FpDirectParts | null;
+  /** 힉스필드에서 받은 이펙트 모델(총구 화염, 탄, 피격 섬광) */
+  fxModels: FxModels;
   /** 주인공 3인칭 몸: 적 봇과 같은 리그에 팔 관절·재장전 클립이 더해진 파란색 상세 모델 */
   playerRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 직접 만든 적 봇 리그(이동 클립 포함). 있으면 raven·pulse_rifle 대신 쓴다 */
@@ -64,12 +67,12 @@ export const ASSET_VER = '?v=' + __BUILD__.replace(/\D/g, '');
 
 /** 레이븐 애니메이션 클립 파일 (M3: 힉스필드 리깅 결과) */
 export const RAVEN_CLIPS: Record<string, string> = {
-  idle: 'models/raven_idle.glb',
-  run: 'models/raven_run.glb',
-  shoot: 'models/raven_shoot.glb',
-  death: 'models/raven_death.glb',
-  walk: 'models/raven_walk.glb',
-  back: 'models/raven_back.glb',
+  idle: 'models/enemy_idle.glb',
+  run: 'models/enemy_run.glb',
+  shoot: 'models/enemy_shoot.glb',
+  death: 'models/enemy_death.glb',
+  walk: 'models/enemy_walk.glb',
+  back: 'models/enemy_back.glb',
 };
 
 /**
@@ -206,11 +209,14 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
 
   onProgress?.('모델 로딩');
   const fpParts = await Promise.all(['fp_gun', 'fp_mag', 'fp_arm'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
+  const fxGltfs = await Promise.all(['fx_flash', 'fx_bolt', 'fx_impact'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
+  const fxModels: FxModels = { flash: fxGltfs[0]?.scene ?? null, bolt: fxGltfs[1]?.scene ?? null, impact: fxGltfs[2]?.scene ?? null };
   const fpDirect = fpParts[0] && fpParts[1] && fpParts[2] ? { gun: fpParts[0].scene, mag: fpParts[1].scene, arm: fpParts[2].scene } : null;
   const [fpDetailGltf, playerRigGltf, botRigGltf, ...kitGltfs] = await Promise.all([
     fpDirect ? Promise.resolve(null) : loadGltf(gl, BASE + 'models/fp_detail.glb'),
     loadGltf(gl, BASE + 'models/player_rig.glb'),
-    loadGltf(gl, BASE + 'models/bot_rig.glb'),
+    // 적의 몸은 힉스필드 리깅 모델(enemy.glb + 동작 클립)을 쓴다. Blender 리그(bot_rig.glb)는 없앤다
+    Promise.resolve(null as GLTF | null),
     // 맵 소품: 힉스필드에서 받은 모델을 하나씩 그대로 불러 모듈 묶음을 만든다(world/KitDirect.ts)
     ...KIT_FILES.map((n) => loadGltf(gl, BASE + `models/kit/${n}.glb`)),
   ]);
@@ -220,8 +226,8 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const [ravenBase, rifleGltf, ...clipGltfs] = botRigGltf
     ? [null, null]
     : await Promise.all([
-        loadGltf(gl, BASE + 'models/raven.glb'),
-        loadGltf(gl, BASE + 'models/pulse_rifle.glb'),
+        loadGltf(gl, BASE + 'models/enemy.glb'),
+        loadGltf(gl, BASE + 'models/enemy_rifle.glb'),
         ...Object.values(RAVEN_CLIPS).map((f) => loadGltf(gl, BASE + f)),
       ]);
 
@@ -277,5 +283,5 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   }
   const detail: DetailTextures = { panel: dPanel, panelDark: dPanelDark, suit: dSuit, worn: dWorn };
   for (const root of [fpRigGltf?.scene, botRigGltf?.scene, playerRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
-  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, fpDirect, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
+  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, fpDirect, fxModels, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }

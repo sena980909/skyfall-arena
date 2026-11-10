@@ -10,7 +10,7 @@ import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import sharp from 'sharp';
 import { statSync } from 'node:fs';
 
-const [src, dst, colour = '2048', normal = '1024'] = process.argv.slice(2);
+const [src, dst, colour = '2048', normal = '1024', mode = ''] = process.argv.slice(2);
 await MeshoptDecoder.ready;
 await MeshoptEncoder.ready;
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.decoder': MeshoptDecoder, 'meshopt.encoder': MeshoptEncoder });
@@ -26,7 +26,8 @@ await doc.transform(
   prune(),
   textureCompress({ encoder: sharp, targetFormat: 'webp', slots: /baseColor|emissive/, resize: [+colour, +colour], quality: 86 }),
   textureCompress({ encoder: sharp, targetFormat: 'webp', slots: /normal/, resize: [+normal, +normal], quality: 88 }),
-  meshopt({ encoder: MeshoptEncoder, level: 'medium' }),
+  // 'plain' keeps the vertex data as floats (effect meshes, whose geometry the game re-orients at load)
+  ...(mode === 'plain' ? [] : [meshopt({ encoder: MeshoptEncoder, level: 'medium' })]),
 );
 await io.write(dst, doc);
 const mb = (f) => (statSync(f).size / 1048576).toFixed(2) + ' MB';

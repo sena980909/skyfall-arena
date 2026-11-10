@@ -224,6 +224,7 @@ export class Game {
       else if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
       if (a.playerRig) this.scene.add(this.player.applyBody(a.playerRig.scene, a.playerRig.clips));
       this.fx.setTextures(a.vfx);
+      this.fx.setModels(a.fxModels);
       this.warmupShaders(a);
       const clips = await this.sfx.loadBank(ASSET_BASE, this.camera);
       console.info(`[Assets] sfx clips: ${clips}`);
