@@ -597,8 +597,9 @@ export class Player implements Hittable, Healable {
     const f = (input.isDown('KeyW') ? 1 : 0) - (input.isDown('KeyS') ? 1 : 0);
     const r = (input.isDown('KeyD') ? 1 : 0) - (input.isDown('KeyA') ? 1 : 0);
     const firing = input.mouseDown[0] || now < this.rocketKickUntil;
-    // 앉기 — C를 누르고 있는 동안(Ctrl은 쓰지 않는다: 브라우저에서 Ctrl+W가 탭을 닫는다). 일어서려면 머리 위가 비어 있어야 한다
-    const wantCrouch = input.isDown('KeyC');
+    // 앉기 — Ctrl 또는 C를 누르고 있는 동안. 일어서려면 머리 위가 비어 있어야 한다.
+    // (브라우저에서 Ctrl+W는 탭 닫기다: Game이 닫히기 전에 확인 창을 띄우고, 전체 화면에서는 키보드 잠금으로 게임이 받는다)
+    const wantCrouch = input.isDown('ControlLeft') || input.isDown('ControlRight') || input.isDown('KeyC');
     if (wantCrouch !== this.crouching && (wantCrouch || this.ctrl.fits(STAND_HEIGHT))) {
       this.crouching = wantCrouch;
       this.ctrl.height = wantCrouch ? CROUCH_HEIGHT : STAND_HEIGHT;

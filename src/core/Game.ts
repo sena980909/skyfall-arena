@@ -55,6 +55,8 @@ export class Game {
   private readonly ctx: GameContext;
 
   private state: GameState = 'menu';
+  /** 시작 화면에서 전체 화면을 골랐는가(Esc로 풀려도 재개할 때 다시 들어간다) */
+  private wantFullscreen = false;
   private difficultyId: DifficultyId = 'normal';
   /** 게임 모드: 임무(목표 수행 후 탈출) 또는 아레나(웨이브 섬멸) */
   mode: 'mission' | 'arena' = 'mission';
@@ -273,6 +275,42 @@ export class Game {
     document.getElementById('btn-resume')?.addEventListener('click', () => this.input.requestLock());
     // 오버레이 자체 클릭으로도 재개
     document.getElementById('ov-pause')?.addEventListener('click', () => this.input.requestLock());
+    this.bindTabGuard();
+  }
+
+  /**
+   * Ctrl(앉기)을 누른 채 W를 누르면 브라우저가 탭을 닫는다(Ctrl+W). 페이지에서 이 단축키를 막을 방법은 없어서 두 겹으로 대비한다.
+   *  1. 진행 중인 판이 있으면 닫히기 전에 브라우저의 확인 창이 뜨게 한다(취소하면 판이 그대로 남는다).
+   *  2. 전체 화면에서는 키보드 잠금(Keyboard Lock, Chrome·Edge)으로 Ctrl+W·T·N을 게임이 받는다 → 창이 뜨지도 않는다.
+   *     전체 화면은 시작 화면의 버튼으로 켠다(F11 전체 화면에서는 키보드 잠금이 동작하지 않는다).
+   */
+  private bindTabGuard(): void {
+    window.addEventListener('beforeunload', (e) => {
+      const inGame = this.state === 'playing' || this.state === 'paused' || this.state === 'dead';
+      if (!inGame || this.autopilot || this.touch) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
+    const btn = document.getElementById('btn-fs');
+    const kb = (navigator as Navigator & { keyboard?: { lock?: (keys?: string[]) => Promise<void>; unlock?: () => void } }).keyboard;
+    const enter = (): void => {
+      if (!this.wantFullscreen || document.fullscreenElement) return;
+      void document.documentElement.requestFullscreen?.().catch(() => undefined);
+    };
+    btn?.addEventListener('click', () => {
+      this.wantFullscreen = !document.fullscreenElement;
+      if (this.wantFullscreen) enter();
+      else void document.exitFullscreen?.().catch(() => undefined);
+    });
+    // Esc는 전체 화면과 마우스 잠금을 함께 푼다 → 다시 시작·재개할 때 전체 화면으로 돌아간다
+    for (const id of ['btn-start', 'btn-restart', 'btn-resume', 'ov-pause']) document.getElementById(id)?.addEventListener('click', enter);
+    document.addEventListener('fullscreenchange', () => {
+      const on = !!document.fullscreenElement;
+      if (btn) btn.textContent = on ? '전체 화면 끄기' : '전체 화면으로 하기';
+      // Escape는 잠그지 않는다(일시정지에 쓴다). 게임이 쓰는 글자 키만 잠가서 Ctrl 조합이 브라우저로 가지 않게 한다
+      if (on) void kb?.lock?.(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyT', 'KeyN', 'KeyR', 'KeyF', 'KeyE', 'KeyQ', 'KeyC', 'KeyV'])?.catch(() => undefined);
+      else kb?.unlock?.();
+    });
   }
 
   private onResize(): void {

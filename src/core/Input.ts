@@ -23,6 +23,9 @@ export class Input {
       if (!this.keys.has(e.code)) this.pressed.add(e.code);
       this.keys.add(e.code);
       if (e.code === 'Space' || e.code === 'Tab' || e.code === 'F3' || e.code === 'F8') e.preventDefault();
+      // 플레이 중에는 Ctrl(앉기)을 누른 채 다른 키를 눌러도 브라우저 단축키(저장·북마크·찾기·새로고침)가 뜨지 않게 한다.
+      // Ctrl+W·T·N은 브라우저가 페이지에 넘겨주지 않아 여기서 막을 수 없다 → Game의 닫힘 방지(beforeunload)와 전체 화면 키보드 잠금으로 막는다
+      if (this.locked && e.ctrlKey) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('mousemove', (e) => {
