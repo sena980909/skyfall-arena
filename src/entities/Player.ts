@@ -54,6 +54,11 @@ interface LockTarget {
 /** 1인칭 플레이어 (레이븐) — 펄스 라이플 / Shift 달리기 / 우클릭 펄스 로켓 / E 치유 필드 / Q 전술 조준 */
 /** 상세 1인칭 모델 배치: 가슴 높이로 든 자세를 조준 높이까지 올리고(오른쪽·위·앞), 총구를 화면 중앙 쪽으로 살짝 돌린다 */
 const FP_DETAIL_BASE = new Vector3(0.0, 0.125, -0.19);
+/** 앉기: 충돌 높이(서 있을 때 / 앉았을 때), 눈이 내려가는 높이, 이동 속도 배율(앉아 걷기 클립 2.75m/s와 맞춘다) */
+const STAND_HEIGHT = 1.8;
+const CROUCH_HEIGHT = 1.25;
+const CROUCH_EYE_DROP = 0.55;
+const CROUCH_SPEED_MULT = 0.5;
 // Keep the barrel parallel to the view axis. Shots travel from the muzzle to the crosshair, so a barrel that is
 // turned inward (it was 0.1 rad) makes every bolt leave the gun at a visible angle.
 const FP_DETAIL_YAW = 0;
@@ -124,6 +129,23 @@ export class Player implements Hittable, Healable {
   /** 뷰모델 전용 FOV(월드 FOV와 분리해 팔·총이 과장되지 않게) */
   static readonly VIEWMODEL_FOV = 56;
   private readonly eyeHeight = 1.6;
+  /** 앉아 있는가(C를 누르는 동안). crouchT는 0..1로 부드럽게 따라가는 값: 눈높이와 판정 높이에 쓴다 */
+  crouching = false;
+  private crouchT = 0;
+
+  /** 지금 눈높이(발에서) */
+  private get eyeNow(): number {
+    return this.eyeHeight - CROUCH_EYE_DROP * this.crouchT;
+  }
+
+  /** 머리 판정의 중심 높이, 가슴 높이(발에서). 적이 조준하고 시야를 잴 때 쓴다 */
+  get headHeight(): number {
+    return 1.62 - CROUCH_EYE_DROP * this.crouchT;
+  }
+
+  get chestHeight(): number {
+    return 1.0 - 0.35 * this.crouchT;
+  }
   private fpRigActive = false;
   /** 상세 1인칭 모델(팔·총 한 덩어리) 사용 중 */
   private fpDetailActive = false;
@@ -422,6 +444,9 @@ export class Player implements Hittable, Healable {
     this.recoil = 0;
     this.ultUntil = 0;
     this.rocketKickUntil = 0;
+    this.crouching = false;
+    this.crouchT = 0;
+    this.ctrl.height = STAND_HEIGHT;
     this.rocketReadyAt = Math.min(this.rocketReadyAt, now);
     this.fieldReadyAt = Math.min(this.fieldReadyAt, now);
     this.body?.reset(this.yaw);
@@ -479,7 +504,7 @@ export class Player implements Hittable, Healable {
       const b = (this.deathT - FALL) / 0.28;
       if (b < 1) bounce = Math.sin(b * Math.PI) * 0.06;
     }
-    const eye = this.eyeHeight + (0.32 - this.eyeHeight) * ease + bounce;
+    const eye = this.eyeNow + (0.32 - this.eyeNow) * ease + bounce;
     const yawK = Math.min(1, this.deathT / 1.4);
     const yaw = this.deathYaw0 + this.deathYawDelta * (yawK * yawK * (3 - 2 * yawK));
     const pitch = this.deathPitch0 + (0.3 - this.deathPitch0) * sm;
@@ -493,7 +518,7 @@ export class Player implements Hittable, Healable {
     const p = this.ctrl.pos;
     // 카메라 상하 흔들림은 아주 작게 (멀미 방지), 총이 대부분의 움직임을 표현한다
     const camBob = Math.sin(this.bob * 2) * 0.012 * this.bobAmp;
-    const ey = p.y + this.eyeHeight + this.ctrl.visualYOffset;
+    const ey = p.y + this.eyeNow + this.ctrl.visualYOffset;
     this.camera.rotation.set(this.pitch, this.yaw, 0);
     if (!this.thirdPerson) {
       this.camera.position.set(p.x, ey + camBob - this.landKick * 0.4, p.z);
@@ -523,8 +548,11 @@ export class Player implements Hittable, Healable {
 
   private syncHitboxes(): void {
     const p = this.ctrl.pos;
-    this.bodyHit.position.set(p.x, p.y + 0.75, p.z);
-    this.headHit.position.set(p.x, p.y + 1.62, p.z);
+    // 앉으면 몸통 판정이 1.5m → 1.05m로 줄고 머리 판정이 0.55m 내려간다
+    const squash = 1 - 0.3 * this.crouchT;
+    this.bodyHit.scale.y = squash;
+    this.bodyHit.position.set(p.x, p.y + 0.75 * squash, p.z);
+    this.headHit.position.set(p.x, p.y + this.headHeight, p.z);
     this.hitGroup.updateMatrixWorld(true);
   }
 
@@ -569,8 +597,15 @@ export class Player implements Hittable, Healable {
     const f = (input.isDown('KeyW') ? 1 : 0) - (input.isDown('KeyS') ? 1 : 0);
     const r = (input.isDown('KeyD') ? 1 : 0) - (input.isDown('KeyA') ? 1 : 0);
     const firing = input.mouseDown[0] || now < this.rocketKickUntil;
-    this.sprinting = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && f > 0 && this.ctrl.onGround && !firing && !this.carrying;
-    const speed = this.hero.moveSpeed * (this.sprinting ? ab.sprint.speedMult : 1);
+    // 앉기 — C를 누르고 있는 동안(Ctrl은 쓰지 않는다: 브라우저에서 Ctrl+W가 탭을 닫는다). 일어서려면 머리 위가 비어 있어야 한다
+    const wantCrouch = input.isDown('KeyC');
+    if (wantCrouch !== this.crouching && (wantCrouch || this.ctrl.fits(STAND_HEIGHT))) {
+      this.crouching = wantCrouch;
+      this.ctrl.height = wantCrouch ? CROUCH_HEIGHT : STAND_HEIGHT;
+    }
+    this.crouchT += ((this.crouching ? 1 : 0) - this.crouchT) * Math.min(1, dt * 12);
+    this.sprinting = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && f > 0 && this.ctrl.onGround && !firing && !this.carrying && !this.crouching;
+    const speed = this.hero.moveSpeed * (this.sprinting ? ab.sprint.speedMult : this.crouching && this.ctrl.onGround ? CROUCH_SPEED_MULT : 1);
     this.wish.set(0, 0, 0).addScaledVector(this.forward, f).addScaledVector(this.right, r);
     if (this.wish.lengthSq() > 0) this.wish.normalize().multiplyScalar(speed);
     let jumpVel = 0;
@@ -595,8 +630,8 @@ export class Player implements Hittable, Healable {
     this.bobAmp += (targetAmp - this.bobAmp) * Math.min(1, dt * 8);
     if (this.ctrl.onGround && moveSpeed > 0.3) {
       const prev = this.bob;
-      this.bob += dt * (this.sprinting ? 13.5 : 10.5);
-      if (Math.floor(prev / Math.PI) !== Math.floor(this.bob / Math.PI)) ctx.sfx.footstep(undefined, this.sprinting ? 0.32 : 0.25);
+      this.bob += dt * (this.sprinting ? 13.5 : this.crouching ? 7.5 : 10.5);
+      if (Math.floor(prev / Math.PI) !== Math.floor(this.bob / Math.PI)) ctx.sfx.footstep(undefined, this.sprinting ? 0.32 : this.crouching ? 0.1 : 0.25);
     }
 
     // 무기
@@ -629,6 +664,7 @@ export class Player implements Hittable, Healable {
       this.body.update(dt, {
         pos: this.ctrl.pos, yaw: this.yaw, pitch: this.pitch, onGround: this.ctrl.onGround,
         reload: this.weapon.reloading ? this.weapon.reloadProgress(now) : null, kick: this.recoil, sprint: this.sprinting,
+        crouch: this.crouching,
       });
     }
     this.syncCamera();

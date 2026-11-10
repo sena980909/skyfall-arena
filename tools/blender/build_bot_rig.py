@@ -316,6 +316,8 @@ def frames(T):
     return max(2, round(T * FPS))
 
 
+# 앉았을 때 골반이 내려가는 높이(m). 머리 꼭대기가 1.8 → 1.29(게임 배율 0.95를 곱하면 1.23)로 내려와 1.25m 충돌 상자에 들어간다
+CROUCH_DROP = 0.48
 GAITS = {
     # speed m/s, 주기 프레임 수, 접지 비율, 발 들기, 앞기울기(rad), 방향, 골반 좌우 흔들림, 골반 요, 뒤꿈치 닿기/발끝 떼기 각, 발 간격, 접지 중심 이동
     'walk': dict(v=1.6, n=18, beta=0.60, lift=0.07, lean=0.04, dir=1, sway=0.022, yaw=0.09, hs=0.28, to=0.55, fx=0.10, ys=0.0, crouch=0.02),
@@ -328,6 +330,9 @@ if MODE == 'player':
     GAITS['run'].update(v=5.5, n=16, beta=0.30)
     GAITS['back'].update(v=5.5, n=13, beta=0.36, lift=0.12)
     GAITS['sprint'] = dict(v=8.25, n=13, beta=0.25, lift=0.24, lean=0.26, dir=1, sway=0.010, yaw=0.14, hs=0.05, to=1.05, fx=0.065, ys=-0.07, crouch=0.05)
+    # 앉아 걷기(2.75m/s = 기본 속도의 절반): 골반을 CROUCH_DROP만큼 낮추고 허리를 숙인다. 게임의 CROUCH_SPEED_MULT와 맞아야 한다
+    GAITS['crouchWalk'] = dict(v=2.75, n=12, beta=0.50, lift=0.07, lean=0.42, dir=1, sway=0.02, yaw=0.07, hs=0.12, to=0.35, fx=0.12, ys=0.04, crouch=CROUCH_DROP)
+    GAITS['crouchBack'] = dict(v=2.75, n=12, beta=0.50, lift=0.06, lean=0.36, dir=-1, sway=0.018, yaw=0.06, hs=0.12, to=0.3, fx=0.12, ys=0.06, crouch=CROUCH_DROP)
 # 옆걸음: 몸은 정면(+Y)을 본 채 발이 좌우(X)로 디딘다. side = +1 오른쪽(+X), -1 왼쪽으로 이동.
 # 보폭이 발 간격보다 커서 두 발이 엇갈리므로, 한 발은 앞줄·한 발은 뒷줄로 디뎌 다리가 서로 뚫지 않게 한다.
 # 느린 것(2.8m/s, 봇의 교전 옆걸음)과 빠른 것(5.5m/s, 주인공 기본 속도) 두 가지를 좌우로 만든다.
@@ -335,6 +340,8 @@ STRAFE = dict(lean=0.0, dir=1, sway=0.0, yaw=0.0, hs=0.0, to=0.0, fx=0.13, ys=0.
 for _nm, _side in (('L', -1), ('R', 1)):
     GAITS['strafe' + _nm] = dict(STRAFE, v=2.8, n=12, beta=0.42, lift=0.09, crouch=0.03, side=_side)
     GAITS['strafeFast' + _nm] = dict(STRAFE, v=5.5, n=10, beta=0.30, lift=0.13, crouch=0.04, side=_side)
+    if MODE == 'player':
+        GAITS['crouchStrafe' + _nm] = dict(STRAFE, v=2.75, n=10, beta=0.46, lift=0.06, crouch=CROUCH_DROP, side=_side, lean=0.36, fx=0.2)
 for cfg in GAITS.values():
     cfg['T'] = cfg['n'] / FPS
     cfg['s'] = cfg['v'] * cfg['beta'] * cfg['T']
@@ -460,6 +467,12 @@ def pose(clip, t):
         hipsX = Matrix.Translation((0.0, 0.0, -0.03 + 0.004 * br)) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.03)
         feet = {'L': (Vector((-0.125, 0.06, ANKLE_H)), 0.0), 'R': (Vector((0.125, -0.06, ANKLE_H)), 0.0)}
         lean, hyaw, bob, roll = 0.03, -0.06, 0.003 * br, 0.0
+    elif clip == 'crouch':
+        # 앉은 자세(무릎앉아): 왼발은 앞에 평평하게 딛고, 오른쪽 무릎을 바닥 가까이 내린 채 오른발은 뒤에서 발끝으로 딛는다
+        br = math.sin(t / 3.0 * math.tau)
+        hipsX = Matrix.Translation((0.0, -0.02, -CROUCH_DROP - 0.02 + 0.004 * br)) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.40)
+        feet = {'L': (Vector((-0.14, 0.24, ANKLE_H)), 0.0), 'R': (Vector((0.14, -0.20, ANKLE_H + 0.09)), -0.85)}
+        lean, hyaw, bob, roll = 0.40, -0.06, 0.003 * br, 0.0
     elif clip in TURNS:
         sg = TURNS[clip]
         u = min(1.0, max(0.0, t / (TURN_N / FPS)))
@@ -647,6 +660,13 @@ else:
         for tt in (0.25, 0.42, 0.62, 0.9, 1.15):
             shot(f'player_reload_{int(tt * 100):03d}', 'reload', tt, (-1.5, 2.6, 1.55), look=(0, 0.1, 1.25))
             shot(f'player_reload_back_{int(tt * 100):03d}', 'reload', tt, (0.7, -2.2, 1.9), look=(0, 0.3, 1.3))
+        shot('player_crouch_side', 'crouch', 0.0, (3.8, 0.2, 0.8), look=(0, 0, 0.65))
+        shot('player_crouch_front', 'crouch', 0.0, (1.6, 3.2, 1.1), look=(0, 0, 0.65))
+        for clip in ('crouchWalk', 'crouchBack'):
+            for q in (0, 1):
+                shot(f'player_{clip}_{q}', clip, GAITS[clip]['T'] * q / 4, (3.8, 0.2, 0.8), look=(0, 0, 0.65))
+        for q in (0, 1):
+            shot(f'player_crouchStrafeR_{q}', 'crouchStrafeR', GAITS['crouchStrafeR']['T'] * q / 4, (0.4, 4.0, 0.8), look=(0, 0, 0.65))
     for clip in ('walk', 'run', 'back'):
         T = GAITS[clip]['T']
         for q in (0, 1):
@@ -696,6 +716,8 @@ else:
     acts = [bake('idle', 90, BODY)] + [bake(name, cfg['n'], BODY) for name, cfg in GAITS.items()]
     acts += [bake('death', round(DEATH_LEN * FPS), BODY), bake('air', 2, BODY)]
     acts += [bake(name, TURN_N, BODY) for name in TURNS]
+    if MODE == 'player':
+        acts.append(bake('crouch', 90, BODY))
 if MODE in ('player', 'fp'):
     acts.append(bake('reload', round(TL.RELOAD_LEN * FPS), None if ARMS_ONLY else set(EXTRA)))
 slot_of = {a.name: (a.slots[0] if getattr(a, 'slots', None) else None) for a in acts}

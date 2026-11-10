@@ -14,7 +14,10 @@ const TURN_DUR = 0.3;
 /** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
 const CLIP_SPEED: Record<string, number> = {
   walk: 1.6, jog: 2.8, run: 5.5, sprint: 8.25, back: 5.5, strafeL: 2.8, strafeR: 2.8, strafeFastL: 5.5, strafeFastR: 5.5,
+  crouchWalk: 2.75, crouchBack: 2.75, crouchStrafeL: 2.75, crouchStrafeR: 2.75,
 };
+/** 서 있는 자세 클립(걸음이 아닌 것) */
+const isStill = (name: string): boolean => name === 'idle' || name === 'crouch';
 /** 허리 비틀림 한계(라디안). 넘으면 다리가 조준 쪽으로 끌려온다. 옆걸음 때 몸이 과하게 꼬이지 않게 봇(1.9)보다 작게 둔다 */
 const MAX_TWIST = 1.57;
 /** 재장전 클립이 움직이는 본(팔·총·탄창). 보행 클립에서는 이 트랙을 빼고, 재장전 클립에는 이 트랙만 남긴다 */
@@ -36,6 +39,8 @@ export interface PlayerBodyState {
   kick: number;
   /** 질주 중(총을 내리고 달린다) */
   sprint: boolean;
+  /** 앉아 있다(앉은 자세·앉아 걷기 클립을 쓴다) */
+  crouch: boolean;
 }
 
 function wrap(a: number): number {
@@ -208,7 +213,9 @@ export class PlayerBody {
     } else this.dir = 'fwd';
     if (dt > 0) this.aimRate += (wrap(aimYaw - this.lastAim) / dt - this.aimRate) * Math.min(1, dt * 8);
     this.lastAim = aimYaw;
-    const stepTurn = !moving && s.onGround && !!this.actions.turnL && !!this.actions.turnR;
+    // 앉아 있을 때는 발을 떼는 돌기를 쓰지 않는다(돌기 클립이 서 있는 자세라서 일어섰다 앉게 된다). 다리가 조준을 천천히 따라 돈다
+    const crouch = s.crouch && !!this.actions.crouch && !!this.actions.crouchWalk;
+    const stepTurn = !moving && s.onGround && !crouch && !!this.actions.turnL && !!this.actions.turnR;
     if (stepTurn) {
       // 제자리 돌기: 다리는 그대로 두고 상체만 조준을 따라가다가, 비틀림이 커지거나 비틀린 채 잠시 서 있으면 발을 떼어 한 걸음에 돈다.
       // 다리를 조준 쪽으로 계속 돌리면 디딘 두 발이 바닥에서 돈다(GaitDir.TurnStep)
@@ -253,6 +260,7 @@ export class PlayerBody {
     this.gaitSpeed = moving ? Math.max(speed, this.gaitSpeed - dt * 6) : 0;
     const gs = this.gaitSpeed;
     const clipFor = (dir: GaitDir): string => {
+      if (crouch) return dir === 'back' ? 'crouchBack' : dir === 'left' ? 'crouchStrafeL' : dir === 'right' ? 'crouchStrafeR' : 'crouchWalk';
       if (dir === 'back') return 'back';
       if (dir === 'left' || dir === 'right') {
         const fast = gs > 3.92 * (this.gait.startsWith('strafeFast') || this.gait2.startsWith('strafeFast') ? 0.85 : 1.15);
@@ -260,14 +268,15 @@ export class PlayerBody {
       }
       return gs < 2.12 ? 'walk' : gs < 3.92 ? 'jog' : gs < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
     };
-    let name = 'idle';
+    const rest = crouch ? 'crouch' : 'idle';
+    let name = rest;
     let name2 = '';
     let w2 = 0;
     let ts1 = 1;
     let ts2 = 1;
     if (moving) {
       name = clipFor(this.dir);
-      if (!this.actions[name]) name = 'idle';
+      if (!this.actions[name]) name = rest;
       else {
         ts1 = speed / CLIP_SPEED[name];
         // 대각선: 이동 방향이 주 걸음에서 벗어난 만큼 옆 걸음을 섞는다(GaitDir.solveGaitBlend)
@@ -295,7 +304,7 @@ export class PlayerBody {
     if (name !== this.gait) {
       const from = this.actions[this.gait];
       const to = this.actions[name];
-      if (from && to && name !== 'idle' && this.gait !== 'idle') {
+      if (from && to && !isStill(name) && !isStill(this.gait)) {
         const mirrored = mirroredStrafePhase(this.gait, name, from.time / from.getClip().duration);
         if (mirrored !== null) {
           // 좌↔우 뒤집기: 발 위치가 이어지는 위상에서 새 클립을 시작하고 가중치를 바로 넘긴다(섞는 동안 발이 미끄러지지 않게)
@@ -340,7 +349,7 @@ export class PlayerBody {
     // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다
     const pa = this.actions[name];
     const sa = name2 ? this.actions[name2] : undefined;
-    if (pa && sa && name !== 'idle') sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
+    if (pa && sa && !isStill(name)) sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
     this.reloadBlend += ((s.reload !== null ? 1 : 0) - this.reloadBlend) * Math.min(1, dt * 14);
     if (this.reloadAction) {
       if (s.reload !== null) this.reloadAction.time = s.reload * this.reloadAction.getClip().duration;

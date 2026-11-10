@@ -20,6 +20,8 @@ interface ButtonDef {
   bottom: number;
   /** 누른 채 끌면 시점도 같이 돈다(사격 버튼) */
   look?: boolean;
+  /** 누를 때마다 켜고 끈다(앉기: 조준하는 엄지로 계속 누르고 있을 수 없다) */
+  toggle?: boolean;
   color?: string;
 }
 
@@ -32,6 +34,7 @@ const BUTTONS: ButtonDef[] = [
   { id: 'heal', label: '치유', key: 'KeyE', size: 52, right: 110, bottom: 164 },
   { id: 'ult', label: '궁', key: 'KeyQ', size: 52, right: 196, bottom: 110 },
   { id: 'use', label: 'F', key: 'KeyF', size: 56, right: 268, bottom: 62, color: 'rgba(127, 240, 255, .28)' },
+  { id: 'crouch', label: '앉기', key: 'KeyC', size: 50, right: 274, bottom: 130, toggle: true },
 ];
 
 const STICK_RADIUS = 56;
@@ -54,6 +57,8 @@ export class TouchControls {
   private readonly knob: HTMLElement;
   private readonly tracks = new Map<number, Track>();
   private moveKeys: string[] = [];
+  /** 켜져 있는 토글 버튼 */
+  private readonly toggled = new Map<string, { def: ButtonDef; el: HTMLElement }>();
   private active = false;
 
   constructor(private readonly input: Input, private readonly onPause: () => void, private readonly onToggleView: () => void) {
@@ -119,6 +124,8 @@ export class TouchControls {
 
   private releaseAll(): void {
     for (const t of this.tracks.values()) if (t.kind === 'btn') this.setButton(t.def, t.el, false);
+    for (const t of this.toggled.values()) this.setButton(t.def, t.el, false);
+    this.toggled.clear();
     this.tracks.clear();
     this.setMove([]);
     this.stick.style.display = 'none';
@@ -151,7 +158,12 @@ export class TouchControls {
       }
       const id = target.dataset?.btn;
       const def = id ? BUTTONS.find((b) => b.id === id) : undefined;
-      if (def) {
+      if (def?.toggle) {
+        const on = !this.toggled.has(def.id);
+        if (on) this.toggled.set(def.id, { def, el: target });
+        else this.toggled.delete(def.id);
+        this.setButton(def, target, on);
+      } else if (def) {
         this.tracks.set(t.identifier, { kind: 'btn', def, el: target, x: t.clientX, y: t.clientY });
         this.setButton(def, target, true);
       } else if (t.clientX < window.innerWidth * 0.42 && ![...this.tracks.values()].some((k) => k.kind === 'stick')) {

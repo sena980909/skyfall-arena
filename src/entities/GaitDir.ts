@@ -79,7 +79,9 @@ export function solveGaitBlend(speed: number, residual: number, v1: number, T1: 
 }
 
 /** 옆걸음 클립의 접지 비율(tools/blender/build_bot_rig.py의 STRAFE beta와 같은 값) */
-const STRAFE_BETA: Record<string, number> = { strafeL: 0.42, strafeR: 0.42, strafeFastL: 0.3, strafeFastR: 0.3 };
+const STRAFE_BETA: Record<string, number> = {
+  strafeL: 0.42, strafeR: 0.42, strafeFastL: 0.3, strafeFastR: 0.3, crouchStrafeL: 0.46, crouchStrafeR: 0.46,
+};
 
 /**
  * 반대쪽 옆걸음으로 바꿀 때(좌↔우) 새 클립을 시작할 위상(0..1). 아니면 null.

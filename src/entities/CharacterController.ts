@@ -34,6 +34,15 @@ export class CharacterController {
     this.onGround = false;
   }
 
+  /** 지금 자리에서 키 h로 설 수 있는가(머리 위가 막혀 있지 않은가). 앉았다 일어설 때 쓴다 */
+  fits(h: number): boolean {
+    const keep = this.height;
+    this.height = h;
+    const hit = this.overlap(this.pos);
+    this.height = keep;
+    return !hit;
+  }
+
   private overlap(p: Vector3): Box3 | null {
     const r = this.radius;
     const h = this.height;

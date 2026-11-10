@@ -1270,7 +1270,7 @@ export class Bot implements Hittable, Healable {
       return;
     }
     this.eye.copy(this.ctrl.pos).setY(this.ctrl.pos.y + this.eyeHeight);
-    const pEye = this.tmp.copy(player.position).setY(player.position.y + 1.5);
+    const pEye = this.tmp.copy(player.position).setY(player.position.y + player.headHeight - 0.12);
     const dist = this.eye.distanceTo(pEye);
     if (dist > SIGHT_RANGE) {
       this.canSee = false;
@@ -1284,7 +1284,7 @@ export class Bot implements Hittable, Healable {
       this.canSee = false;
       return;
     }
-    const chest = this.tmp2.copy(player.position).setY(player.position.y + 1.0);
+    const chest = this.tmp2.copy(player.position).setY(player.position.y + player.chestHeight);
     const visible = !losBlocked(this.eye, pEye, ctx.map.meshes) || !losBlocked(this.eye, chest, ctx.map.meshes);
     this.canSee = visible;
     if (visible) {
@@ -1313,7 +1313,7 @@ export class Bot implements Hittable, Healable {
     }
     this.eye.copy(this.ctrl.pos).setY(this.ctrl.pos.y + this.eyeHeight);
     const target = this.tmp.copy(player.position);
-    target.y += this.aimHead ? 1.62 : 1.0;
+    target.y += this.aimHead ? player.headHeight : player.chestHeight;
     this.desired.copy(target).sub(this.eye);
     const dist = this.desired.length();
     this.desired.divideScalar(dist || 1);
@@ -1593,7 +1593,7 @@ export class Bot implements Hittable, Healable {
   /** 엄폐 지점 탐색: 반경 10m 내 걷기 가능 지점 중 플레이어 시야가 막힌 가장 가까운 곳 */
   private tryCover(): boolean {
     const ctx = this.ctx;
-    const pEye = this.tmp3.copy(ctx.player.position).setY(ctx.player.position.y + 1.5);
+    const pEye = this.tmp3.copy(ctx.player.position).setY(ctx.player.position.y + ctx.player.headHeight - 0.12);
     const candidates: { p: Vector3; d: number }[] = [];
     for (let i = 0; i < 24; i++) {
       const p = ctx.nav.randomWalkableNear(this.ctrl.pos, 10, 1);
