@@ -4,9 +4,16 @@ import {
 } from 'three';
 import type { VfxTextures } from '@/core/Assets';
 
+const WHITE = new Color(0xffffff);
+
 interface Tracer { line: Line; mat: LineBasicMaterial; dieAt: number; life: number }
 interface Spark { mesh: Sprite; mat: SpriteMaterial; dieAt: number; life: number; vel: Vector3; size: number }
-interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dir: Vector3; dist: number; len: number; t: number; speed: number; hitColor: number; sparkCount: number }
+interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dir: Vector3; dist: number; len: number; t: number; speed: number; hitColor: number; sparkCount: number; normal: Vector3 | null }
+interface Decal { mesh: Mesh; mat: MeshBasicMaterial; glow: Mesh; glowMat: MeshBasicMaterial; born: number }
+/** 탄흔 최대 개수(넘으면 가장 오래된 것부터 재사용), 유지 시간, 달아오른 자국이 식는 시간 */
+const DECAL_MAX = 48;
+const DECAL_LIFE = 9;
+const DECAL_HOT = 0.7;
 interface Flash { sprite: Sprite; mat: SpriteMaterial; dieAt: number; life: number; grow?: number; base?: number }
 interface Mote { sprite: Sprite; mat: SpriteMaterial; vel: Vector3; dieAt: number; life: number; size: number; gravity: number }
 interface ImpactAnim { sprite: Sprite; mat: SpriteMaterial; tex: Texture; start: number; life: number }
@@ -30,6 +37,10 @@ export class Fx {
   private readonly dotTex: CanvasTexture;
   private vfx: VfxTextures | null = null;
   private impacts: ImpactAnim[] = [];
+  private decals: Decal[] = [];
+  private decalNext = 0;
+  private readonly decalGeo = new PlaneGeometry(1, 1);
+  private scorchTex: CanvasTexture | null = null;
   private motes: Mote[] = [];
   readonly muzzleLight = new PointLight(0xffd27a, 0, 8, 2);
   /** 섬광탄 비행 중 빛 — 상시 존재(강도 0)시켜 조명 개수 변화를 막는다 */
@@ -99,7 +110,7 @@ export class Fx {
    * 날아가는 탄환 광선: from→to를 speed(m/s)로 이동, 도착 시 스파크.
    * 피해 판정은 즉시(히트스캔)지만 시각적으로는 짧은 광선이 날아간다.
    */
-  bolt(from: Vector3, to: Vector3, color: number, hitColor: number, sparkCount: number, speed = 160): void {
+  bolt(from: Vector3, to: Vector3, color: number, hitColor: number, sparkCount: number, speed = 160, normal: Vector3 | null = null): void {
     const dist = from.distanceTo(to);
     const len = Math.min(1.6, Math.max(0.4, dist * 0.5));
     let mesh: Mesh;
@@ -122,13 +133,65 @@ export class Fx {
     this.scene.add(mesh);
     const dir = to.clone().sub(from).normalize();
     // 첫 프레임부터 총구 앞에 반 길이쯤 보이도록 시작
-    const b: Bolt = { mesh, mat, from: from.clone(), to: to.clone(), dir, dist, len, t: len * 0.4, speed, hitColor, sparkCount };
+    const b: Bolt = { mesh, mat, from: from.clone(), to: to.clone(), dir, dist, len, t: len * 0.4, speed, hitColor, sparkCount, normal };
     this.placeBolt(b);
     this.bolts.push(b);
     if (dist < 1.5) {
       // 아주 가까우면 바로 도착 처리
       this.sparks(to, hitColor, sparkCount);
+      if (normal) this.decal(to, normal, color);
     }
+  }
+
+  /** 탄흔용 그을음 텍스처: 가운데가 진하고 가장자리가 불규칙하게 옅어지는 검은 얼룩 */
+  private static makeScorchTexture(): CanvasTexture {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d')!;
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + Math.random();
+      const r = i === 0 ? 0 : 5 + Math.random() * 7;
+      const x = 32 + Math.cos(a) * r;
+      const y = 32 + Math.sin(a) * r;
+      const rad = i === 0 ? 20 : 9 + Math.random() * 8;
+      const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+      grad.addColorStop(0, 'rgba(0,0,0,0.75)');
+      grad.addColorStop(0.5, 'rgba(0,0,0,0.4)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+    }
+    return new CanvasTexture(c);
+  }
+
+  /**
+   * 탄흔: 맞은 표면에 그을음 자국을 남기고, 그 위의 달아오른 점이 잠깐 빛나다 식는다.
+   * 최대 DECAL_MAX개를 돌려쓰고 DECAL_LIFE초 뒤 사라진다. 판정용 상자 표면 기준이라 장식 모델보다 몇 cm 안쪽일 수 있어 살짝 띄운다.
+   */
+  decal(point: Vector3, normal: Vector3, color: number): void {
+    if (!this.scorchTex) this.scorchTex = Fx.makeScorchTexture();
+    let d = this.decals[this.decalNext];
+    if (!d) {
+      const mat = new MeshBasicMaterial({ map: this.scorchTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+      const mesh = new Mesh(this.decalGeo, mat);
+      const glowMat = new MeshBasicMaterial({ map: this.dotTex, transparent: true, blending: AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+      const glow = new Mesh(this.decalGeo, glowMat);
+      glow.position.z = 0.004;
+      mesh.add(glow);
+      this.scene.add(mesh);
+      d = { mesh, mat, glow, glowMat, born: 0 };
+      this.decals[this.decalNext] = d;
+    }
+    this.decalNext = (this.decalNext + 1) % DECAL_MAX;
+    d.mesh.position.copy(point).addScaledVector(normal, 0.03);
+    d.mesh.lookAt(this.tmpV.copy(d.mesh.position).add(normal));
+    d.mesh.rotateZ(Math.random() * Math.PI * 2);
+    const size = 0.2 + Math.random() * 0.1;
+    d.mesh.scale.set(size, size, 1);
+    d.glow.scale.setScalar(0.55);
+    d.glowMat.color.setHex(color).lerp(WHITE, 0.4);
+    d.mesh.visible = true;
+    d.born = performance.now() / 1000;
   }
 
   /** 총구 섬광 스프라이트 (짧게 번쩍) */
@@ -350,10 +413,25 @@ export class Fx {
           if (cm !== b.mat) cm.dispose();
         }
         this.bolts.splice(i, 1);
-        if (b.dist >= 1.5) this.sparks(b.to, b.hitColor, b.sparkCount);
+        if (b.dist >= 1.5) {
+          this.sparks(b.to, b.hitColor, b.sparkCount);
+          if (b.normal) this.decal(b.to, b.normal, b.mat.color.getHex());
+        }
         continue;
       }
       this.placeBolt(b);
+    }
+    for (const d of this.decals) {
+      if (!d || !d.mesh.visible) continue;
+      const age = now - d.born;
+      if (age >= DECAL_LIFE) {
+        d.mesh.visible = false;
+        continue;
+      }
+      d.mat.opacity = Math.min(1, (DECAL_LIFE - age) / 2.5);
+      const hot = Math.max(0, 1 - age / DECAL_HOT);
+      d.glow.visible = hot > 0;
+      d.glowMat.opacity = hot * hot * 2.2;
     }
     for (let i = this.flashes.length - 1; i >= 0; i--) {
       const f = this.flashes[i];
@@ -448,6 +526,7 @@ export class Fx {
     for (const f of this.flashes) this.scene.remove(f.sprite);
     for (const im of this.impacts) this.scene.remove(im.sprite);
     for (const m of this.motes) this.scene.remove(m.sprite);
+    for (const d of this.decals) if (d) d.mesh.visible = false;
     this.motes = [];
     this.bolts = [];
     this.flashes = [];

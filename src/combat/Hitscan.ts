@@ -26,6 +26,8 @@ export interface HitResult {
   distance: number;
   target: Hittable | null;
   part: HitPart | null;
+  /** 맵에 맞았을 때의 표면 법선(월드, 쏜 쪽을 향함). 대상에 맞았거나 빗나가면 null — 탄흔 배치용 */
+  normal: Vector3 | null;
 }
 
 const raycaster = new Raycaster();
@@ -54,12 +56,17 @@ export function hitscan(
   }
   const hits = raycaster.intersectObjects(objs, false);
   if (hits.length === 0) {
-    return { point: origin.clone().addScaledVector(dir, maxDist), distance: maxDist, target: null, part: null };
+    return { point: origin.clone().addScaledVector(dir, maxDist), distance: maxDist, target: null, part: null, normal: null };
   }
   const h = hits[0];
   const owner = (h.object.userData.owner as Hittable | undefined) ?? null;
   const part = (h.object.userData.part as HitPart | undefined) ?? null;
-  return { point: h.point.clone(), distance: h.distance, target: owner, part };
+  let normal: Vector3 | null = null;
+  if (!owner && h.face) {
+    normal = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+    if (normal.dot(dir) > 0) normal.negate();
+  }
+  return { point: h.point.clone(), distance: h.distance, target: owner, part, normal };
 }
 
 /** 시야선(LOS) 체크: 맵만 대상으로 두 점 사이가 막혔는지 */

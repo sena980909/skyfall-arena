@@ -1090,7 +1090,7 @@ export class Bot implements Hittable, Healable {
       muzzle.copy(this.eye).addScaledVector(dir, 0.7);
       muzzle.y -= 0.35 * this.scale;
     }
-    ctx.fx.bolt(muzzle, res.point, this.isBoss ? 0xff4040 : 0xff8a5a, res.target === ctx.player ? 0xff4040 : 0xffb27a, res.target ? 4 : 2, 140);
+    ctx.fx.bolt(muzzle, res.point, this.isBoss ? 0xff4040 : 0xff8a5a, res.target === ctx.player ? 0xff4040 : 0xffb27a, res.target ? 4 : 2, 140, res.normal);
     ctx.fx.muzzleSprite(muzzle, 0.22);
     const distToPlayer = this.ctrl.pos.distanceTo(ctx.player.position);
     ctx.sfx.shootFar(Math.max(0.05, 0.35 - distToPlayer * 0.006), muzzle);

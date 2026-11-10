@@ -11,6 +11,7 @@ import type { GameContext } from './Context';
 import { GreyboxMap } from '@/world/GreyboxMap';
 import { NavGrid } from '@/ai/NavGrid';
 import { Fx } from '@/render/Fx';
+import { PostFx } from '@/render/PostFx';
 import { Hud } from '@/ui/Hud';
 import { Player } from '@/entities/Player';
 import type { Bot } from '@/entities/Bot';
@@ -53,6 +54,14 @@ export class Game {
   private respawnAt = 0;
   /** 사망 오버레이는 쓰러지는 연출이 보이도록 잠시 뒤에 띄운다 */
   private deadOverlayAt = 0;
+  /** 후처리(블룸·화면 보정). 만들지 못하는 환경이면 null → 기존처럼 화면에 바로 그린다. F7로 켜고 끈다 */
+  private post: PostFx | null = null;
+  /** 피격 화면 충격 계산용: 직전 프레임의 체력 */
+  private lastHpSeen = 0;
+  /** 후처리 자동 끄기 판정: 플레이 중 프레임 시간 누적 (한 번만 판정) */
+  private perfFrames = 0;
+  private perfTime = 0;
+  private perfChecked = false;
   private debug = false;
   private startedAt = 0;
   assets: LoadedAssets | null = null;
@@ -68,23 +77,30 @@ export class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.22;
     container.appendChild(this.renderer.domElement);
 
     this.camera = new PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 400);
     this.scene.add(this.camera);
+    try {
+      this.post = new PostFx(this.renderer, () => this.drawWorld(), () => this.drawViewmodel());
+    } catch (e) {
+      console.warn('[PostFx] 후처리를 만들 수 없어 끔', e);
+      this.post = null;
+    }
     this.scene.background = new Color(0x9fc5ff);
-    this.scene.fog = new Fog(0x9fc5ff, 90, 220);
+    this.scene.fog = new Fog(0x9fc5ff, 60, 240);
 
-    const hemi = new HemisphereLight(0xcfe3ff, 0x40464f, 0.9);
-    const sun = new DirectionalLight(0xfff1dc, 1.8);
-    sun.position.set(35, 60, 25);
+    // 늦은 오후 느낌: 낮고 따뜻한 해 + 약한 하늘빛. 해가 닿는 면과 그늘의 대비가 커지고 그림자가 길어진다
+    const hemi = new HemisphereLight(0xd6e6ff, 0x6a5c4c, 0.62);
+    const sun = new DirectionalLight(0xffe0b0, 2.7);
+    sun.position.set(42, 40, 16);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -50;
-    sun.shadow.camera.right = 50;
-    sun.shadow.camera.top = 40;
-    sun.shadow.camera.bottom = -40;
+    sun.shadow.camera.left = -52;
+    sun.shadow.camera.right = 52;
+    sun.shadow.camera.top = 46;
+    sun.shadow.camera.bottom = -46;
     sun.shadow.camera.near = 10;
     sun.shadow.camera.far = 150;
     sun.shadow.bias = -0.0005;
@@ -151,7 +167,7 @@ export class Game {
       if (a.sky) {
         this.scene.background = a.sky;
         this.scene.environment = a.sky;
-        this.scene.fog = new Fog(0xbcd6ff, 120, 260);
+        this.scene.fog = new Fog(0xc9dcf5, 60, 240);
       }
       this.map.applyTextures(a.floor, a.container);
       if (a.mapKit) this.map.applyKit(a.mapKit);
@@ -194,6 +210,7 @@ export class Game {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.post?.resize();
   }
 
   private onLockChange(locked: boolean): void {
@@ -318,6 +335,11 @@ export class Game {
     this.lastFrame = t;
 
     if (this.input.justPressed('F8')) this.setAutopilot(this.autopilot ? null : 'average');
+    if (this.input.justPressed('F7') && this.post) {
+      this.post.enabled = !this.post.enabled;
+      this.perfChecked = true;
+      this.hud.killFeed(this.post.enabled ? '후처리 ON' : '후처리 OFF');
+    }
     if (this.input.justPressed('F3')) {
       this.debug = !this.debug;
       for (const b of this.bots) b.setDebug(this.debug);
@@ -343,6 +365,26 @@ export class Game {
 
     this.fx.camPos.copy(this.camera.position);
     this.fx.update(dt);
+    if (this.post) {
+      // 맞은 만큼 화면 충격(색수차·붉은 가장자리), 체력이 낮으면 채도가 빠진다
+      const hp = this.player.hp;
+      const inGame = this.state === 'playing' || this.state === 'dead';
+      if (inGame && hp < this.lastHpSeen) this.post.hit((this.lastHpSeen - hp) / 50);
+      this.lastHpSeen = hp;
+      this.post.setHealth(!inGame ? 1 : this.state === 'dead' ? 0.15 : hp / this.player.maxHp);
+      // 느린 기기 보호: 플레이 첫 4초쯤(240프레임)의 평균이 40fps에 못 미치면 후처리를 끈다. F7로 다시 켤 수 있다
+      if (!this.perfChecked && this.post.enabled && this.state === 'playing' && dt > 0) {
+        this.perfFrames++;
+        this.perfTime += dt;
+        if (this.perfFrames >= 240) {
+          this.perfChecked = true;
+          if (this.perfTime / this.perfFrames > 1 / 40) {
+            this.post.enabled = false;
+            this.hud.killFeed('프레임이 낮아 후처리를 껐습니다 (F7로 다시 켜기)');
+          }
+        }
+      }
+    }
     if (this.debug && this.state !== 'menu') {
       const items = this.bots.filter((b) => b.alive).map((b) => ({ world: b.position.clone().setY(b.position.y + 2.1), text: b.debugText() }));
       this.hud.setBotLabels(items, this.camera);
@@ -352,27 +394,42 @@ export class Game {
     if (consumedInput) this.input.endFrame();
   }
 
-  /** 월드 패스 → 깊이 버퍼 비움 → 뷰모델 패스. 1인칭 총이 벽을 뚫고 보이지 않게 한다 */
+  /**
+   * 월드 패스 → 뷰모델 패스. 1인칭 총이 벽을 뚫고 보이지 않게 따로 그린다.
+   * 후처리가 켜져 있으면 PostFx가 두 패스를 각자의 타깃에 그려 합친 뒤 블룸·화면 보정을 한다.
+   * 꺼져 있으면 화면에 바로 그린다(월드 → 깊이 버퍼 비움 → 뷰모델).
+   */
   private renderFrame(): void {
+    if (this.post?.enabled) {
+      this.post.render();
+      return;
+    }
     const r = this.renderer;
-    this.camera.layers.set(0);
-    r.autoClear = true;
-    r.render(this.scene, this.camera);
-    const bg = this.scene.background;
-    this.scene.background = null;
+    this.drawWorld();
     r.autoClear = false;
     r.clearDepth();
+    this.drawViewmodel();
+    r.autoClear = true;
+  }
+
+  private drawWorld(): void {
+    this.camera.layers.set(0);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private drawViewmodel(): void {
+    const bg = this.scene.background;
+    this.scene.background = null;
     // 뷰모델 전용 FOV: 가까운 총·팔의 원근 왜곡을 줄인다 (일반 FPS 관례)
     const worldFov = this.camera.fov;
     this.camera.fov = Player.VIEWMODEL_FOV;
     this.camera.updateProjectionMatrix();
     this.camera.layers.set(Player.VIEWMODEL_LAYER);
-    r.render(this.scene, this.camera);
+    this.renderer.render(this.scene, this.camera);
     this.camera.layers.set(0);
     this.camera.fov = worldFov;
     this.camera.updateProjectionMatrix();
     this.scene.background = bg;
-    r.autoClear = true;
   }
 
   /**

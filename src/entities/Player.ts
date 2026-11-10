@@ -662,7 +662,7 @@ export class Player implements Hittable, Healable {
 
     this.fxMuzzlePosition(this.tmp);
     const hitColor = res.target ? 0xff7a4a : 0xffd27a;
-    ctx.fx.bolt(this.tmp, res.point, this.ultActive ? 0xffd9a0 : 0x8ec5ff, hitColor, res.target ? 6 : 3);
+    ctx.fx.bolt(this.tmp, res.point, this.ultActive ? 0xffd9a0 : 0x8ec5ff, hitColor, res.target ? 6 : 3, 160, res.normal);
     ctx.fx.muzzleFlash(6);
     ctx.fx.muzzleSprite(this.tmp, 0.26);
     ctx.sfx.shoot();
