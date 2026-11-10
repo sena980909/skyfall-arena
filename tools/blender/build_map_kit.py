@@ -54,6 +54,10 @@ _vc.layer_name = 'Col'
 PAINT.node_tree.links.new(_vc.outputs['Color'], _bsdf.inputs['Base Color'])
 
 MODULES = []
+# 생성 소품의 앞뒤(미리보기를 보고 맞춘다): 제어대는 앞면이 -Y를 봐야 한다
+WALL_YAW = 0.0
+RACK_YAW = 0.0
+DESK_YAW = 0.0
 
 
 GEN = os.path.join(PROJECT, 'assets_src', 'higgs')
@@ -67,6 +71,16 @@ def generated(name, file, size, yaw=0.0, tex=512, uniform=False, max_tris=0):
     if not USE_GEN or not os.path.exists(path):
         return None
     ob = BD.import_static(path, name, size, yaw=yaw, tex_size=tex, uniform=uniform, max_tris=max_tris)
+    MODULES.append(ob)
+    return ob
+
+
+def projected(name, file, size, rects, atlas, **kw):
+    """상자 모양 소품: 생성 메시의 겉그림만 깨끗한 상자에 입힌다(BD.project_box). 없거나 no_gen이면 None."""
+    path = os.path.join(GEN, file)
+    if not USE_GEN or not os.path.exists(path):
+        return None
+    ob = BD.project_box(path, name, size, rects, atlas, PREVIEW, **kw)
     MODULES.append(ob)
     return ob
 
@@ -357,7 +371,22 @@ deck()
 pillar()
 rail()
 stairs()
-wall_seg()
+# 벽 구간(8 x 1 x 6): 양쪽 큰 면은 같은 그림을 쓴다(아틀라스의 같은 자리). 양 끝도 마찬가지
+if not projected('kit_wall', 'prop_wall.glb', (8, 1, 6),
+                 {'yp': (0, 0, 1365, 1024), 'yn': (0, 0, 1365, 1024), 'zp': (1365, 0, 683, 85), 'xp': (1365, 85, 128, 768), 'xn': (1365, 85, 128, 768)},
+                 (2048, 1024), border=0.25, inset=0.06, glow=(0.6, 0.45, 1.6), metallic=0.3, roughness=0.62, yaw=WALL_YAW):
+    wall_seg()
+# 서버 랙 한 줄(4.5 x 1.2 x 3.0)과 관제실 제어대(14/3 x 1.2 x 1.0, 앞면 = -Y)
+projected('kit_rack', 'prop_rack.glb', (4.5, 1.2, 3.0),
+          {'yn': (0, 0, 1024, 683), 'yp': (0, 0, 1024, 683), 'zp': (0, 683, 1024, 273), 'xp': (1024, 0, 273, 683), 'xn': (1024, 0, 273, 683)},
+          (2048, 1024), border=0.12, inset=0.05, glow=(0.55, 0.45, 2.2), metallic=0.45, roughness=0.5, yaw=RACK_YAW)
+# 관제동 정문의 문짝 하나(3 x 0.5 x 4.7): 양면이 같은 그림
+projected('kit_door', 'prop_door.glb', (3, 0.5, 4.7),
+          {'yn': (0, 0, 654, 1024), 'yp': (0, 0, 654, 1024), 'xp': (654, 0, 109, 1024), 'xn': (654, 0, 109, 1024), 'zp': (763, 0, 256, 43)},
+          (1024, 1024), border=0.12, inset=0.05, glow=(0.55, 0.5, 2.0), metallic=0.35, roughness=0.6)
+projected('kit_desk', 'prop_desk.glb', (14 / 3, 1.2, 1.0),
+          {'zp': (0, 0, 2048, 527), 'yp': (0, 527, 2048, 439), 'yn': (0, 527, 2048, 439), 'xp': (0, 966, 70, 58), 'xn': (0, 966, 70, 58)},
+          (2048, 1024), border=0.1, inset=0.03, glow=(0.5, 0.45, 2.0), metallic=0.4, roughness=0.5, yaw=DESK_YAW)
 tower()
 lamp()
 print('TOTAL_TRIS', sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in MODULES))
@@ -367,6 +396,8 @@ cam = L.setup_preview(res=(1400, 700), fov_deg=30)
 lineup = {'kit_container_a': (-9, 0, 0), 'kit_container_b': (-9, 4, 0), 'kit_crate': (-3.5, 0, 0), 'kit_crate_tall': (-3.5, 3.5, 0),
           'kit_barrier': (2, -1.5, 0), 'kit_pillar': (0, 3, 0), 'kit_rail': (4, 5, 0), 'kit_wall': (6, 9, 0), 'kit_stairs': (7, 0, 0),
           'kit_console': (-0.5, -2.5, 0)}
+if 'new_props' in argv:
+    lineup = {'kit_wall': (-6, 4, 0), 'kit_rack': (3.5, 0, 0), 'kit_desk': (-3, -3.5, 0), 'kit_door': (6, -3, 0)}
 for o in MODULES:
     o.hide_render = o.name not in lineup
     if o.name in lineup:

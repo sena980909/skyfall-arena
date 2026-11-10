@@ -120,7 +120,7 @@ const GradeShader = {
       col *= 1.0 - edge * (0.34 + 0.25 * uLowHp);
       col = mix(col, vec3(0.55, 0.03, 0.02), edge * (0.45 * uDamage + 0.22 * uLowHp * (0.6 + 0.4 * sin(uTime * 5.0))));
       // 필름 그레인 (밴딩 방지 겸)
-      col += (hash(vUv * 917.0 + fract(uTime) * 61.0) - 0.5) * 0.022;
+      col += (hash(vUv * 917.0 + fract(uTime) * 61.0) - 0.5) * 0.012;
       gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
     }`,
 };

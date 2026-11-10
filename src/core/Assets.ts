@@ -23,6 +23,11 @@ export interface VfxTextures {
 export interface LoadedAssets {
   sky: Texture | null;
   floor: Texture | null;
+  /** 바닥 요철(노멀맵): 판 사이 홈과 볼트. tools/make_floor_maps.py가 색 그림에서 만든다 */
+  floorN: Texture | null;
+  /** 실내(관제동) 바닥의 무늬 강판과 그 요철 */
+  deck: Texture | null;
+  deckN: Texture | null;
   container: Texture | null;
   raven: CharacterAsset | null;
   rifle: Group | null;
@@ -142,11 +147,12 @@ async function exists(url: string): Promise<boolean> {
   }
 }
 
-async function loadTexture(loader: TextureLoader, url: string, repeat?: [number, number]): Promise<Texture | null> {
+async function loadTexture(loader: TextureLoader, url: string, repeat?: [number, number], srgb = true): Promise<Texture | null> {
   if (!(await exists(url))) return null;
   try {
     const t = await loader.loadAsync(url + ASSET_VER);
-    t.colorSpace = SRGBColorSpace;
+    // 노멀맵은 색이 아니라 방향 값이다: 색 공간 변환을 하지 않는다
+    if (srgb) t.colorSpace = SRGBColorSpace;
     if (repeat) {
       t.wrapS = t.wrapT = RepeatWrapping;
       t.repeat.set(repeat[0], repeat[1]);
@@ -174,10 +180,13 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const tl = new TextureLoader();
   const gl = new GLTFLoader();
   onProgress?.('텍스처 로딩');
-  const [sky, floor, container] = await Promise.all([
+  const [sky, floor, container, floorN, deck, deckN] = await Promise.all([
     loadTexture(tl, BASE + 'textures/sky_panorama.jpg'),
     loadTexture(tl, BASE + 'textures/floor_plates.jpg', [20, 15]),
     loadTexture(tl, BASE + 'textures/container_panel.jpg', [2, 1]),
+    loadTexture(tl, BASE + 'textures/floor_plates_n.jpg', [20, 15], false),
+    loadTexture(tl, BASE + 'textures/floor_deck.jpg', [1, 1]),
+    loadTexture(tl, BASE + 'textures/floor_deck_n.jpg', [1, 1], false),
   ]);
   if (sky) sky.mapping = EquirectangularReflectionMapping;
   const [muzzle, bolt, impact, flashBurst] = await Promise.all([
@@ -257,5 +266,5 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   }
   const detail: DetailTextures = { panel: dPanel, panelDark: dPanelDark, suit: dSuit, worn: dWorn };
   for (const root of [fpRigGltf?.scene, botRigGltf?.scene, playerRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
-  return { sky, floor, container, raven, rifle, fpArms, fpRig, fpDetail, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
+  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }

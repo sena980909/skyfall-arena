@@ -215,7 +215,7 @@ export class Game {
         this.scene.environment = a.sky;
         this.scene.fog = new Fog(0xc9dcf5, 60, 240);
       }
-      this.map.applyTextures(a.floor, a.container);
+      this.map.applyTextures(a.floor, a.container, { floorN: a.floorN, deck: a.deck, deckN: a.deckN });
       if (a.mapKit) this.map.applyKit(a.mapKit);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
       if (a.fpDetail) this.player.applyFpDetail(a.fpDetail.scene, a.fpDetail.clips);

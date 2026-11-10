@@ -460,16 +460,18 @@ BOX_FACES = {
 }
 
 
-def project_box(path, name, size, rects, atlas, tmp_dir, border=0.2, inset=0.07):
+def project_box(path, name, size, rects, atlas, tmp_dir, border=0.2, inset=0.07, yaw=0.0, glow=None, metallic=0.25, roughness=0.6):
     """상자 모양 소품: 생성 메시의 모양은 버리고 겉그림만 쓴다.
 
     이미지→3D 메시는 수천 면으로는 평평한 면과 곧은 모서리를 못 만든다(골판이 울퉁불퉁하고 테두리가 녹은 것처럼 휜다).
     그래서 생성 메시를 여섯 방향에서 직교 투영으로 찍어 한 장(atlas)에 모으고, 깨끗한 상자(테두리 + 안으로 들어간 판)에 입힌다.
     size = (X 길이, Y 깊이, Z 높이), rects = {면 이름: (x, y, w, h)} 아틀라스 안의 자리(픽셀, 왼쪽 아래 기준),
     atlas = (W, H). 재질 이름은 '<name>_gen'.
+    yaw(라디안)로 앞뒤를 돌린다. glow = (밝기 문턱, 채도 문턱, 세기)를 주면 겉그림에서 밝고 진한 색(표시등·화면)만
+    골라 발광 그림을 따로 만든다(게임에서 그 부분만 빛난다).
     """
     import numpy as np
-    src = import_static(path, name + '_src', size, tex_size=4096, material_name=name + '_srcmat')
+    src = import_static(path, name + '_src', size, yaw=yaw, tex_size=4096, material_name=name + '_srcmat')
     mat = src.data.materials[0]
     bsdf = next(n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
     links = bsdf.inputs['Base Color'].links
@@ -576,8 +578,26 @@ def project_box(path, name, size, rects, atlas, tmp_dir, border=0.2, inset=0.07)
     node = out.node_tree.nodes.new('ShaderNodeTexImage')
     node.image = tex
     out.node_tree.links.new(node.outputs['Color'], ob_bsdf.inputs['Base Color'])
-    ob_bsdf.inputs['Metallic'].default_value = 0.25
-    ob_bsdf.inputs['Roughness'].default_value = 0.6
+    ob_bsdf.inputs['Metallic'].default_value = metallic
+    ob_bsdf.inputs['Roughness'].default_value = roughness
+    if glow:
+        v_min, s_min, strength = glow
+        rgb = pixels[:, :, :3]
+        mx = rgb.max(axis=2)
+        mn = rgb.min(axis=2)
+        sat = np.where(mx > 1e-4, (mx - mn) / np.maximum(mx, 1e-4), 0.0)
+        mask = np.clip((mx - v_min) / 0.12, 0.0, 1.0) * np.clip((sat - s_min) / 0.12, 0.0, 1.0)
+        em = np.zeros_like(pixels)
+        em[:, :, :3] = rgb * mask[:, :, None]
+        em[:, :, 3] = 1.0
+        etex = bpy.data.images.new(name + '_glow', W, H, alpha=False)
+        etex.pixels.foreach_set(em.ravel())
+        etex.pack()
+        enode = out.node_tree.nodes.new('ShaderNodeTexImage')
+        enode.image = etex
+        out.node_tree.links.new(enode.outputs['Color'], ob_bsdf.inputs['Emission Color'])
+        ob_bsdf.inputs['Emission Strength'].default_value = strength
+        print('GLOW', name, 'COVER', round(float(mask.mean()) * 100, 2), '%')
     me.materials.append(out)
     ob = bpy.data.objects.new(name, me)
     bpy.context.scene.collection.objects.link(ob)

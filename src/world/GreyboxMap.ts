@@ -5,6 +5,8 @@ import {
   SRGBColorSpace, Texture, Vector3,
 } from 'three';
 
+/** 바닥 요철(노멀맵)의 세기 */
+const FLOOR_RELIEF = 0.9;
 /** 경보 때 관제동 실내 조명이 물드는 색 */
 const ALARM_COLOR = new Color(0xff3a28);
 
@@ -12,6 +14,8 @@ const ALARM_COLOR = new Color(0xff3a28);
 const KIT_REF: Record<string, [number, number, number]> = {
   container: [6, 2.5, 2.5], crate: [2, 1, 2], crate_tall: [2, 2, 2], barrier: [6, 1.1, 0.6],
   deck: [12, 0.4, 12], pillar: [1, 3.6, 1], rail: [12, 1, 0.3], wall: [8, 6, 1],
+  // 서버 랙 한 줄, 관제실 제어대(4.67m 모듈을 이어 붙인다. 앞면 = +Z)
+  rack: [4.5, 3.0, 1.2], desk: [14 / 3, 1.0, 1.2],
 };
 interface KitTag { mesh: Mesh; kind: string; cx: number; y0: number; cz: number; sx: number; sy: number; sz: number; yaw?: number }
 
@@ -74,13 +78,16 @@ export class GreyboxMap {
   /** 관제동 정문(야드 북벽의 출입구). 임무에서 봉쇄가 풀릴 때까지 닫혀 있다. 두 짝이 좌우 벽 속으로 밀려 들어가며 열린다 */
   doorOpen = false;
   private doorLeaves: Mesh[] = [];
+  /** 문짝의 겉모습(키트의 kit_door). 없으면 문짝 상자가 그대로 보인다 */
+  private doorSkins: (Object3D | null)[] = [null, null];
   private doorBoxes: Box3[] = [];
   private doorSlide = 0;
   /** 경보: 관제동 천장 조명판과 실내 조명이 붉게 깜박인다 */
   private alarm = false;
+  private alarmSince = -1;
   private panelMat: MeshStandardMaterial | null = null;
   private lightBase: { color: Color; intensity: number }[] = [];
-  private readonly extraFloors: { mat: MeshStandardMaterial; sx: number; sz: number }[] = [];
+  private readonly extraFloors: { mat: MeshStandardMaterial; sx: number; sz: number; indoor: boolean }[] = [];
 
   private readonly matFloor = new MeshStandardMaterial({ color: 0x3a4250, roughness: 0.95 });
   private readonly matWall = new MeshStandardMaterial({ color: 0x4a5566, roughness: 0.9 });
@@ -253,7 +260,7 @@ export class GreyboxMap {
     const mat = this.matFloor.clone();
     const m = this.addBox(cx, -0.5, cz, sx, 0.5, sz, mat);
     m.castShadow = false;
-    this.extraFloors.push({ mat, sx, sz });
+    this.extraFloors.push({ mat, sx, sz, indoor: this.target === this.blockGroup });
   }
 
   /** 계단 한 줄: (topX, topZ) = 단 위쪽 가장자리의 가운데, (dx, dz) = 내려가는 방향(축 방향 단위 벡터). 0.45m 단, 0.7m 디딤 */
@@ -422,7 +429,7 @@ export class GreyboxMap {
     // 서버실: 랙 네 대(옆문 사이 통로는 비운다)
     const glow = new MeshStandardMaterial({ color: 0x06222c, emissive: 0x38d8ff, emissiveIntensity: 2.0 });
     for (const x of [-4.5, 4.5]) for (const z of [-140.75, -149.25]) {
-      const rack = this.addBox(x, 0, z, 1.2, 3.0, 4.5, this.matRack);
+      const rack = this.addBox(x, 0, z, 1.2, 3.0, 4.5, this.matRack, true, 'rack');
       for (const y of [-0.95, -0.2, 0.55]) {
         const strip = new Mesh(new BoxGeometry(1.24, 0.07, 4.1), glow);
         strip.position.y = y;
@@ -436,7 +443,7 @@ export class GreyboxMap {
     this.addBox(-21, 0, -165, 2, 1.0, 2, this.matCrate, true, 'crate');
     this.addBox(21, 0, -157, 2, 1.0, 2, this.matCrate, true, 'crate');
     this.addBox(-22, 0, -156, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
-    const desk = this.addBox(0, 0, -166.9, 14, 1.0, 1.2, this.matRack);
+    const desk = this.addBox(0, 0, -166.9, 14, 1.0, 1.2, this.matRack, true, 'desk');
     const deskStrip = new Mesh(new BoxGeometry(13.6, 0.06, 1.24), glow);
     deskStrip.position.y = 0.3;
     desk.add(deskStrip);
@@ -489,8 +496,9 @@ export class GreyboxMap {
     if (!g) return mat;
     g.fillStyle = '#03131c';
     g.fillRect(0, 0, cv.width, cv.height);
-    g.strokeStyle = 'rgba(70, 200, 240, 0.28)';
-    g.lineWidth = 1;
+    // 격자선은 2픽셀(1픽셀이면 멀리서 움직일 때 자글거린다)
+    g.strokeStyle = 'rgba(70, 200, 240, 0.2)';
+    g.lineWidth = 2;
     for (let x = 0; x <= cv.width; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, cv.height); g.stroke(); }
     for (let y = 0; y <= cv.height; y += 23) { g.beginPath(); g.moveTo(0, y); g.lineTo(cv.width, y); g.stroke(); }
     // 왼쪽: 막대 그래프, 가운데: 구역 지도, 오른쪽: 경고 띠
@@ -515,6 +523,7 @@ export class GreyboxMap {
     }
     const tex = new CanvasTexture(cv);
     tex.colorSpace = SRGBColorSpace;
+    tex.anisotropy = 8;
     mat.emissiveMap = tex;
     return mat;
   }
@@ -554,14 +563,22 @@ export class GreyboxMap {
     if (!open) {
       // 닫을 때(임무 다시 시작)는 바로 닫는다
       this.doorSlide = 0;
-      this.doorLeaves.forEach((leaf, i) => leaf.position.setX((i ? 1 : -1) * 1.5));
+      this.doorLeaves.forEach((_, i) => this.slideLeaf(i, 1.5));
     }
+  }
+
+  /** 문짝 하나를 가운데에서 off만큼 떨어진 자리로(상자와 겉모습을 함께) */
+  private slideLeaf(i: number, off: number): void {
+    const x = (i ? 1 : -1) * off;
+    this.doorLeaves[i].position.setX(x);
+    this.doorSkins[i]?.position.setX(x);
   }
 
   /** 경보 켜고 끄기(관제동 조명) */
   setAlarm(on: boolean): void {
     if (on === this.alarm) return;
     this.alarm = on;
+    this.alarmSince = -1;
     if (on) return;
     if (this.panelMat) {
       this.panelMat.emissive.setHex(0xdff2ff);
@@ -579,11 +596,14 @@ export class GreyboxMap {
       this.doorSlide = Math.min(1, this.doorSlide + dt / 1.2);
       const e = this.doorSlide * this.doorSlide * (3 - 2 * this.doorSlide);
       // 문짝은 벽(두께 1m) 속으로 3m 밀려 들어가 보이지 않게 된다
-      this.doorLeaves.forEach((leaf, i) => leaf.position.setX((i ? 1 : -1) * (1.5 + e * 3.02)));
+      this.doorLeaves.forEach((_, i) => this.slideLeaf(i, 1.5 + e * 3.02));
     }
     if (this.alarm) {
-      // 1.6초 주기. 완전히 어두워지지는 않는다(싸움이 보여야 한다)
-      const k = 0.5 + 0.5 * Math.sin(time * 3.9);
+      // 경보가 울리는 처음 5초만 깜박이고(점점 약하게), 그 뒤로는 붉은 비상등으로 가만히 켜져 있다.
+      // 계속 깜박이면 벽에 비친 빛이 싸우는 내내 출렁인다
+      if (this.alarmSince < 0) this.alarmSince = time;
+      const fade = Math.max(0, 1 - (time - this.alarmSince) / 5);
+      const k = 0.62 + 0.38 * Math.sin((time - this.alarmSince) * 3.9) * fade;
       if (this.panelMat) {
         this.panelMat.emissive.setHex(0xff5a40);
         this.panelMat.emissiveIntensity = 0.7 + 1.3 * k;
@@ -661,15 +681,15 @@ export class GreyboxMap {
       }
       const ref = KIT_REF[t.kind];
       if (!ref) continue;
-      if (t.kind === 'wall') {
-        // 긴 벽은 8m 구간 모듈을 이어 붙인다
+      if (t.kind === 'wall' || t.kind === 'desk') {
+        // 긴 벽은 8m 구간 모듈을, 제어대는 4.67m 모듈을 이어 붙인다
         const alongX = t.sx >= t.sz;
         const len = alongX ? t.sx : t.sz;
         const n = Math.max(1, Math.round(len / ref[0]));
         const seg = len / n;
         let ok = true;
         for (let i = 0; i < n; i++) {
-          const inst = place('kit_wall', true, parent);
+          const inst = place('kit_' + t.kind, true, parent);
           if (!inst) { ok = false; break; }
           const off = -len / 2 + seg * (i + 0.5);
           inst.position.set(alongX ? t.cx + off : t.cx, t.y0, alongX ? t.cz : t.cz + off);
@@ -698,6 +718,15 @@ export class GreyboxMap {
       else inst.scale.set(t.sx / ref[0], t.sy / ref[1], t.sz / ref[2]);
       t.mesh.visible = false;
     }
+    // 관제동 정문: 문짝마다 생성 모델(3 x 4.7 x 0.5m)을 씌운다. 오른쪽 문짝은 뒤집어 놓는다
+    this.doorLeaves.forEach((leaf, i) => {
+      const inst = place('kit_door');
+      if (!inst) return;
+      inst.position.set(leaf.position.x, 0, leaf.position.z);
+      inst.rotation.y = i ? Math.PI : 0;
+      leaf.visible = false;
+      this.doorSkins[i] = inst;
+    });
     // 배경: 경기장 밖 타워(충돌·판정 없음)와 벽 위 조명
     const towers: [number, number, number, number][] = [
       [-70, -20, 1.4, 1.2], [-60, -55, 1.0, 0.8], [-58, -98, 1.2, 1.4], [-54, -150, 1.6, 1.0], [52, -148, 1.0, 1.5], [60, -105, 1.2, 1.1], [62, -52, 1.3, 0.9],
@@ -720,28 +749,60 @@ export class GreyboxMap {
   }
 
   /** M3: 생성된 텍스처 적용 (없으면 그레이박스 색 유지) */
-  applyTextures(floor: Texture | null, container: Texture | null): void {
+  applyTextures(
+    floor: Texture | null, container: Texture | null,
+    extra: { floorN?: Texture | null; deck?: Texture | null; deckN?: Texture | null } = {},
+  ): void {
+    // 같은 그림을 반복 횟수만 바꿔 쓴다
+    const tile = (src: Texture, rx: number, ry: number): Texture => {
+      const t = src.clone();
+      t.repeat.set(rx, ry);
+      t.needsUpdate = true;
+      return t;
+    };
+    const { floorN, deck, deckN } = extra;
     if (floor) {
       this.matFloor.map = floor;
       this.matFloor.color.setHex(0xffffff);
       this.matFloor.roughness = 0.8;
+      // 요철(노멀맵): 판 사이의 홈과 볼트가 빛을 받아 패여 보인다. 평평한 그림 한 장으로 보이지 않게 한다
+      if (floorN) {
+        this.matFloor.normalMap = floorN;
+        this.matFloor.normalScale.set(FLOOR_RELIEF, FLOOR_RELIEF);
+      }
       this.matFloor.needsUpdate = true;
       for (const f of this.extraFloors) {
-        const tex = floor.clone();
-        tex.repeat.set((floor.repeat.x * f.sx) / 80, (floor.repeat.y * f.sz) / 60);
-        tex.needsUpdate = true;
-        f.mat.map = tex;
+        // 실내(관제동) 바닥은 무늬 강판(그림 한 장 = 2m 판 2x2)으로 따로 깐다
+        const inside = f.indoor && !!deck;
+        const rx = inside ? f.sx / 4 : (floor.repeat.x * f.sx) / 80;
+        const ry = inside ? f.sz / 4 : (floor.repeat.y * f.sz) / 60;
+        f.mat.map = tile(inside && deck ? deck : floor, rx, ry);
+        const n = inside ? deckN : floorN;
+        if (n) {
+          f.mat.normalMap = tile(n, rx, ry);
+          f.mat.normalScale.set(FLOOR_RELIEF, FLOOR_RELIEF);
+        }
         f.mat.color.setHex(0xffffff);
-        f.mat.roughness = 0.8;
+        f.mat.roughness = inside ? 0.62 : 0.8;
+        f.mat.metalness = inside ? 0.35 : 0;
         f.mat.needsUpdate = true;
       }
       // 플랫폼도 같은 플레이트 텍스처 (반복 축소)
-      const platTex = floor.clone();
-      platTex.repeat.set(3, 3);
-      platTex.needsUpdate = true;
-      this.matPlatform.map = platTex;
+      this.matPlatform.map = tile(floor, 3, 3);
+      if (floorN) {
+        this.matPlatform.normalMap = tile(floorN, 3, 3);
+        this.matPlatform.normalScale.set(FLOOR_RELIEF, FLOOR_RELIEF);
+      }
       this.matPlatform.color.setHex(0xb8c4d4);
       this.matPlatform.needsUpdate = true;
+      // 관제동 천장(48 x 46m): 같은 판을 어둡게 깐다(민짜 색면이었다)
+      this.matCeil.map = tile(floor, 12, 11.5);
+      if (floorN) {
+        this.matCeil.normalMap = tile(floorN, 12, 11.5);
+        this.matCeil.normalScale.set(FLOOR_RELIEF, FLOOR_RELIEF);
+      }
+      this.matCeil.color.setHex(0x7d8a9c);
+      this.matCeil.needsUpdate = true;
     }
     if (floor) {
       // 크레이트/엄폐벽: 플레이트 텍스처를 작게 반복해 그레이박스 색을 벗어난다
