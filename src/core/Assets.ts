@@ -40,9 +40,30 @@ export const RAVEN_CLIPS: Record<string, string> = {
   run: 'models/raven_run.glb',
   shoot: 'models/raven_shoot.glb',
   death: 'models/raven_death.glb',
-  strafe: 'models/raven_strafe.glb',
-  aim: 'models/raven_aim.glb',
+  walk: 'models/raven_walk.glb',
+  back: 'models/raven_back.glb',
 };
+
+/**
+ * 제자리(in-place)가 아닌 클립의 루트 이동 제거: Hips 위치 트랙의 수평(x,z) 선형 이동분만 빼고 좌우 흔들림·상하는 남긴다.
+ * 루트가 앞으로 나아가는 클립을 그대로 반복 재생하면 매 루프마다 캐릭터가 뒤로 순간이동한다.
+ */
+function stripRootMotion(clip: AnimationClip): void {
+  const track = clip.tracks.find((tr) => /hips\.position$/i.test(tr.name));
+  if (!track || track.times.length < 2) return;
+  const v = track.values;
+  const n = track.times.length;
+  const dx = v[(n - 1) * 3] - v[0];
+  const dz = v[(n - 1) * 3 + 2] - v[2];
+  if (Math.hypot(dx, dz) < 0.15) return;
+  const t0 = track.times[0];
+  const dur = track.times[n - 1] - t0 || 1;
+  for (let i = 0; i < n; i++) {
+    const k = (track.times[i] - t0) / dur;
+    v[i * 3] -= dx * k;
+    v[i * 3 + 2] -= dz * k;
+  }
+}
 
 async function exists(url: string): Promise<boolean> {
   try {
@@ -117,6 +138,7 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
       if (g && g.animations.length) {
         const c = g.animations[0].clone();
         c.name = name;
+        stripRootMotion(c);
         clips[name] = c;
       }
     });

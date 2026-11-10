@@ -35,6 +35,7 @@ async function optimizeTextured(file, size) {
 }
 
 async function stripToAnimation(file) {
+  if (!existsSync(file)) return;
   const before = mb(file);
   backup(file);
   const doc = await io.read(file);
@@ -57,5 +58,5 @@ if (all || targets.includes('rifle')) await optimizeTextured(join(DIR, 'pulse_ri
 if (all || targets.includes('fparms')) await optimizeTextured(join(DIR, 'fp_arms.glb'), 1024);
 for (const t of targets) if (t.startsWith('file:')) await optimizeTextured(t.slice(5), 1024);
 if (all || targets.includes('anim')) {
-  for (const n of ['idle', 'run', 'shoot', 'death', 'strafe', 'aim']) await stripToAnimation(join(DIR, `raven_${n}.glb`));
+  for (const n of ['idle', 'run', 'shoot', 'death', 'walk', 'back']) await stripToAnimation(join(DIR, `raven_${n}.glb`));
 }
