@@ -91,3 +91,43 @@ export function mirroredStrafePhase(from: string, to: string, phase: number): nu
   if (STRAFE_BETA[from] === undefined || bt === undefined || from.slice(-1) === to.slice(-1)) return null;
   return (((bt - phase) % 1) + 1) % 1;
 }
+
+/**
+ * 제자리 돌기 한 걸음. 서 있을 때 다리를 조준 쪽으로 계속 돌리면 디딘 두 발이 턴테이블처럼 바닥에서 돈다.
+ * 대신 다리는 그대로 두고 상체만 조준을 따라가다가, 비틀림이 커지면 발을 떼어 한 걸음에 돈다.
+ * turnL/turnR 클립(tools/blender/build_bot_rig.py)은 90° 도는 동안 디딘 발이 제자리에 있도록 구운 것이고,
+ * 더 작은 각은 idle과 섞어서 쓴다(가중치 w).
+ */
+export interface TurnStep {
+  /** 시작할 때 다리가 향한 방향 */
+  from: number;
+  /** 이번 걸음에 도는 각(+ = 왼쪽) */
+  angle: number;
+  /** 진행 0..1 */
+  u: number;
+  dur: number;
+  clip: 'turnL' | 'turnR';
+  /** 돌기 클립 가중치(나머지는 idle) */
+  w: number;
+}
+
+/** 클립이 도는 각 (build_bot_rig.py의 TURN_ANGLE) */
+export const TURN_CLIP_ANGLE = Math.PI / 2;
+
+/** 클립 진행 u(0..1)에서 몸이 돈 비율. build_bot_rig.py의 turn_progress와 같은 식이어야 디딘 발이 미끄러지지 않는다 */
+export function turnYawProgress(u: number): number {
+  const k = Math.max(0, Math.min(1, (u - 0.06) / 0.88));
+  return k * k * (3 - 2 * k);
+}
+
+/** want(라디안)만큼 도는 걸음을 시작한다. 한 걸음은 90°까지이고, 작은 각은 조금 더 빨리 끝난다. dur = 90° 걸음의 길이(초) */
+export function startTurnStep(from: number, want: number, dur: number): TurnStep {
+  const angle = Math.max(-TURN_CLIP_ANGLE, Math.min(TURN_CLIP_ANGLE, want));
+  const w = Math.abs(angle) / TURN_CLIP_ANGLE;
+  return { from, angle, u: 0, dur: dur * (0.65 + 0.35 * w), clip: angle >= 0 ? 'turnL' : 'turnR', w };
+}
+
+/** 걸음 진행에 맞는 다리 방향 */
+export function turnStepYaw(st: TurnStep): number {
+  return st.from + st.angle * turnYawProgress(st.u);
+}

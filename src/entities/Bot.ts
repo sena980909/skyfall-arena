@@ -43,7 +43,8 @@ const RETREAT_COOLDOWN = 15;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
 import {
-  GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir,
+  GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, startTurnStep,
+  turnStepYaw, type GaitDir, type TurnStep,
 } from './GaitDir';
 
 /** Locomotion clips that share the same stride phase layout (left foot plants at phase 0). */
@@ -159,6 +160,9 @@ export class Bot implements Hittable, Healable {
   private gaitSpeed = 0;
   private legsYaw = 0;
   private facingYaw = 0;
+  /** 제자리 돌기 한 걸음(GaitDir.TurnStep)과, 비틀린 채 서 있은 시간 */
+  private turnStep: TurnStep | null = null;
+  private turnWait = 0;
   /** 손에 든 라이플의 총구 (모델 적용 시) */
   private rifleMuzzle: Object3D | null = null;
   /** Blender 제작 리그 사용 여부. 팔·총이 armsgun 본 하나에 묶여 있어 IK·총 부착·장갑 확대가 필요 없다 */
@@ -528,7 +532,7 @@ export class Bot implements Hittable, Healable {
     // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다(재생 배율도 같은 주기가 되게 정해져 있다)
     const pa = this.actions[this.currentAnim];
     const sa = this.blendAnim ? this.actions[this.blendAnim] : undefined;
-    if (pa && sa && sa !== pa) sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
+    if (pa && sa && sa !== pa && !this.turnStep) sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
     this.mixer.update(dt);
     for (let i = 0; i < bones.length; i++) this.poseClean[i].copy(bones[i].quaternion);
   }
@@ -786,6 +790,27 @@ export class Bot implements Hittable, Healable {
         this.gaitDir = 'fwd';
       }
     }
+    // 제자리 돌기: 서 있을 때는 다리를 그대로 두고 상체만 조준을 따라가다가, 비틀림이 40°를 넘거나 비틀린 채 0.8초가 지나면
+    // 발을 떼어 한 걸음에 돈다(turnL/turnR 클립). 다리를 조준 쪽으로 계속 돌리면 디딘 두 발이 바닥에서 돈다
+    const stepTurn = !this.moving && this.ctrl.onGround && !!this.actions.turnL && !!this.actions.turnR;
+    if (stepTurn) {
+      if (!this.turnStep) {
+        const want = wrap(aimYaw - this.facingYaw);
+        this.turnWait = Math.abs(want) > 0.3 ? this.turnWait + dt : 0;
+        if ((this.animWeights.idle ?? 0) > 0.95 && (Math.abs(want) > 0.7 || this.turnWait > 0.8)) {
+          this.turnStep = startTurnStep(this.facingYaw, want, 0.4);
+          this.turnWait = 0;
+        }
+      }
+      if (this.turnStep) {
+        this.turnStep.u = Math.min(1, this.turnStep.u + dt / this.turnStep.dur);
+        this.facingYaw = wrap(turnStepYaw(this.turnStep));
+      }
+    } else {
+      // 도는 중에 움직이기 시작하면 돌기 클립은 그 자세로 멈춘 채 걸음 클립과 섞이며 빠진다
+      this.turnStep = null;
+      this.turnWait = 0;
+    }
     const maxTurn = (this.moving ? 7 : 4) * dt; // 이동 중 ≈ 400°/s, 제자리에서는 천천히
     let legTurn = wrap(this.legsYaw - this.facingYaw);
     // 거의 반대로 돌아야 할 때(뒷걸음 → 돌아서 달리기)는 조준 쪽을 지나가는 방향으로 돈다.
@@ -794,12 +819,12 @@ export class Bot implements Hittable, Healable {
       const side = wrap(aimYaw - this.facingYaw);
       if (Math.abs(side) > 0.2 && Math.sign(side) !== Math.sign(legTurn)) legTurn = Math.sign(side) * (Math.PI * 2 - Math.abs(legTurn));
     }
-    this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, legTurn));
+    if (!stepTurn) this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, legTurn));
     this.group.rotation.y = this.facingYaw;
     // 상체: 월드 기준 요를 따로 두고 교전 중엔 조준 방향, 아니면 다리 방향을 각속도 제한(≈570°/s)으로 따라간다.
     // 비틀림 = 상체 요 − 다리 요 → 다리가 휙 돌아도 상체는 조준을 유지한다.
     if (!this.torsoInit) { this.torsoYaw = this.facingYaw; this.torsoInit = true; }
-    const torsoTarget = engaged ? aimYaw : this.facingYaw;
+    const torsoTarget = engaged || stepTurn ? aimYaw : this.facingYaw;
     const maxTorso = 10 * dt;
     this.torsoYaw = wrap(this.torsoYaw + Math.max(-maxTorso, Math.min(maxTorso, wrap(torsoTarget - this.torsoYaw))));
     // 비틀림은 연속값으로 갱신(±180°에서 다시 감싸면 부호가 뒤집혀 상체가 한 프레임에 200°+ 튄다).
@@ -821,6 +846,23 @@ export class Bot implements Hittable, Healable {
       this.gaitSpeed = 0;
       this.blendAnim = null;
       this.blendW = 0;
+      const st = this.turnStep;
+      if (st && this.currentAnim === 'idle') {
+        // 가중치를 바로 준다: 클립의 처음·끝이 대기 자세와 같아 섞는 시간이 필요 없고, 천천히 올리면 디딘 발이 다리 회전을 따라가지 못한다
+        const a = this.actions[st.clip];
+        for (const n of Object.keys(this.animWeights)) this.animWeights[n] = 0;
+        const done = st.u >= 1;
+        this.animWeights.idle = done ? 1 : 1 - st.w;
+        this.animWeights[st.clip] = done ? 0 : st.w;
+        // 시간은 걸음 진행에 직접 맞춘다(재생 배율을 0으로 두면 믹서가 멈춘 클립으로 보고 가중치를 거두지 않는다)
+        a.timeScale = 1e-6;
+        a.time = Math.min(0.999, st.u) * a.getClip().duration;
+        if (done) this.turnStep = null;
+        else {
+          this.blendAnim = st.clip;
+          this.blendW = st.w;
+        }
+      }
     } else {
       // 정지에서 출발할 때는 평활화 전 속도로 클립을 고른다(봇은 즉시 최고 속도가 되므로 걷기 클립을 거치면 발이 미끄러진다)
       const rawSp = Math.hypot(this.velocity.x, this.velocity.z);
@@ -964,6 +1006,7 @@ export class Bot implements Hittable, Healable {
   private die(headshot: boolean, from?: Vector3): void {
     this.alive = false;
     this.state = 'dead';
+    this.turnStep = null;
     this.debugLine.visible = false;
     this.ctx.sfx.botDeath(this.ctrl.pos);
     // 피격 발광이 시체에 남지 않도록

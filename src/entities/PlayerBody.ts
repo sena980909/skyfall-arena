@@ -3,8 +3,13 @@ import {
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
-  GAIT_ALL, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir,
+  GAIT_ALL, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, startTurnStep, turnStepYaw,
+  type GaitDir, type TurnStep,
 } from './GaitDir';
+
+/** 제자리 돌기: 이 각(라디안)을 넘으면 발을 떼어 돈다 / 90° 한 걸음의 길이(초). 주인공은 마우스로 빨리 돌아서 봇보다 짧게 잡는다 */
+const TURN_START = 0.6;
+const TURN_DUR = 0.3;
 
 /** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
 const CLIP_SPEED: Record<string, number> = {
@@ -58,6 +63,11 @@ export class PlayerBody {
   private readonly clean: Quaternion[] = [];
   private readonly poseBones: Object3D[] = [];
   private legsYaw = 0;
+  /** 제자리 돌기 한 걸음(GaitDir.TurnStep), 비틀린 채 서 있은 시간, 조준이 도는 속도(rad/s) */
+  private turnStep: TurnStep | null = null;
+  private turnWait = 0;
+  private aimRate = 0;
+  private lastAim = 0;
   /** 걸음 방향(전진·뒷걸음·좌우 옆걸음)과 최소 유지 시간 */
   private dir: GaitDir = 'fwd';
   private dirHold = 0;
@@ -146,6 +156,10 @@ export class PlayerBody {
     this.group.rotation.set(0, this.legsYaw, 0);
     this.reloadBlend = 0;
     this.dying = false;
+    this.turnStep = null;
+    this.turnWait = 0;
+    this.aimRate = 0;
+    this.lastAim = this.legsYaw;
     this.airTime = 0;
     this.sprintBlend = 0;
     for (const k of Object.keys(this.actions)) this.weights[k] = k === 'idle' ? 1 : 0;
@@ -192,16 +206,43 @@ export class PlayerBody {
       // 옆걸음 클립이 있으면 다리는 조준 쪽을 보고 대각선은 두 걸음을 섞는다. 없으면 다리를 이동 방향으로 돌린다
       target = blend ? aimYaw : legsYawFor(moveYaw, dir);
     } else this.dir = 'fwd';
-    let d = wrap(target - this.legsYaw);
-    // 거의 반대로 돌 때는 조준 쪽을 지나가는 방향으로 (반대로 돌면 상체가 한 바퀴 돈다)
-    if (Math.abs(d) > 2.6) {
-      const side = wrap(aimYaw - this.legsYaw);
-      if (Math.abs(side) > 0.2 && Math.sign(side) !== Math.sign(d)) d = Math.sign(side) * (Math.PI * 2 - Math.abs(d));
+    if (dt > 0) this.aimRate += (wrap(aimYaw - this.lastAim) / dt - this.aimRate) * Math.min(1, dt * 8);
+    this.lastAim = aimYaw;
+    const stepTurn = !moving && s.onGround && !!this.actions.turnL && !!this.actions.turnR;
+    if (stepTurn) {
+      // 제자리 돌기: 다리는 그대로 두고 상체만 조준을 따라가다가, 비틀림이 커지거나 비틀린 채 잠시 서 있으면 발을 떼어 한 걸음에 돈다.
+      // 다리를 조준 쪽으로 계속 돌리면 디딘 두 발이 바닥에서 돈다(GaitDir.TurnStep)
+      if (!this.turnStep) {
+        const want = wrap(aimYaw - this.legsYaw);
+        this.turnWait = Math.abs(want) > 0.25 ? this.turnWait + dt : 0;
+        if (this.weights.idle > 0.95 && (Math.abs(want) > TURN_START || this.turnWait > 0.6)) {
+          // 조준이 계속 돌고 있으면 그만큼 앞서 돈다(잔걸음이 줄어든다)
+          const lead = Math.sign(this.aimRate) === Math.sign(want) ? Math.max(-0.5, Math.min(0.5, this.aimRate * 0.25)) : 0;
+          this.turnStep = startTurnStep(this.legsYaw, want + lead, TURN_DUR);
+          this.turnWait = 0;
+        }
+      }
+      if (this.turnStep) {
+        this.turnStep.u = Math.min(1, this.turnStep.u + dt / this.turnStep.dur);
+        this.legsYaw = turnStepYaw(this.turnStep);
+      }
+    } else {
+      // 도는 중에 움직이기 시작하면 돌기 클립은 그 자세로 멈춘 채 걸음 클립과 섞이며 빠진다
+      this.turnStep = null;
+      this.turnWait = 0;
+      let d = wrap(target - this.legsYaw);
+      // 거의 반대로 돌 때는 조준 쪽을 지나가는 방향으로 (반대로 돌면 상체가 한 바퀴 돈다)
+      if (Math.abs(d) > 2.6) {
+        const side = wrap(aimYaw - this.legsYaw);
+        if (Math.abs(side) > 0.2 && Math.sign(side) !== Math.sign(d)) d = Math.sign(side) * (Math.PI * 2 - Math.abs(d));
+      }
+      const maxTurn = (moving ? 9 : 5) * dt;
+      this.legsYaw += Math.max(-maxTurn, Math.min(maxTurn, d));
     }
-    const maxTurn = (moving ? 9 : 5) * dt;
-    this.legsYaw += Math.max(-maxTurn, Math.min(maxTurn, d));
-    const twist = Math.max(-MAX_TWIST, Math.min(MAX_TWIST, wrap(aimYaw - this.legsYaw)));
-    // 비틀림 한계를 넘으면 다리가 따라 돈다
+    const rawTwist = wrap(aimYaw - this.legsYaw);
+    const twist = Math.max(-MAX_TWIST, Math.min(MAX_TWIST, rawTwist));
+    // 비틀림 한계를 넘으면 다리가 따라 돈다(도는 중이면 걸음의 기준도 함께 옮긴다)
+    if (this.turnStep) this.turnStep.from += rawTwist - twist;
     this.legsYaw = aimYaw - twist;
     this.group.position.copy(s.pos);
     this.group.rotation.set(0, this.legsYaw, 0);
@@ -271,6 +312,12 @@ export class PlayerBody {
       this.weights[k] = w;
       sum += w;
     }
+    const st = this.turnStep;
+    if (st) {
+      // 돌기 클립은 가중치를 바로 준다: 처음·끝이 대기 자세와 같아 섞는 시간이 필요 없고, 천천히 올리면 디딘 발이 다리 회전을 따라가지 못한다
+      for (const k of Object.keys(this.actions)) this.weights[k] = k === st.clip ? st.w : k === 'idle' ? 1 - st.w : 0;
+      sum = 1;
+    }
     for (const k of Object.keys(this.actions)) {
       const a = this.actions[k];
       a.setEffectiveWeight(this.weights[k] / (sum || 1));
@@ -278,7 +325,17 @@ export class PlayerBody {
       // 공중에서는 다리를 천천히 젓는다
       const t = k === name ? ts1 : k === name2 ? ts2 : speed / (cs || 1);
       // 재생 배율이 속도를 그대로 따라가게 한다(하한을 두면 방향을 뒤집는 순간처럼 속도가 0 근처일 때 발만 움직여 미끄러진다)
-      a.timeScale = cs ? (s.onGround ? Math.max(0.05, Math.min(2, t)) : 0.35) : 1;
+      a.timeScale = cs ? (s.onGround ? Math.max(0.05, Math.min(2, t)) : 0.35) : k === 'turnL' || k === 'turnR' ? 0 : 1;
+    }
+    if (st) {
+      // 돌기 클립의 시간은 걸음 진행에 직접 맞춘다
+      const a = this.actions[st.clip];
+      a.time = Math.min(0.999, st.u) * a.getClip().duration;
+      if (st.u >= 1) {
+        this.weights[st.clip] = 0;
+        this.weights.idle = 1;
+        this.turnStep = null;
+      }
     }
     // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다
     const pa = this.actions[name];
@@ -320,6 +377,7 @@ export class PlayerBody {
   /** 사망: 뒤로 쓰러진다. Player가 사망 상태 동안 매 스텝 호출 */
   updateDeath(dt: number): void {
     if (this.deathT < 0) this.deathT = 0;
+    this.turnStep = null;
     this.deathT += dt;
     const death = this.actions.death;
     if (death) {

@@ -395,19 +395,53 @@ def frame_xf(rest_o, rest_d, rest_u, new_o, new_d, new_u):
     return Matrix.Translation(new_o) @ F(new_d, new_u) @ F(rest_d, rest_u).inverted() @ Matrix.Translation(-Vector(rest_o))
 
 
-def solve_leg(sfx, sx, Hj, target, pitch, X, hint=None):
+def solve_leg(sfx, sx, Hj, target, pitch, X, hint=None, yaw=0.0):
     g = lambda n: f'{n}.{sfx}'  # noqa: E731
     d = target - Hj
     dist = min(d.length, THIGH + SHIN - 0.004)
     n = d.normalized()
     a = (THIGH * THIGH - SHIN * SHIN + dist * dist) / (2 * dist)
     h = math.sqrt(max(THIGH * THIGH - a * a, 1e-8))
-    e = A.orth(Vector(hint) if hint is not None else Vector((sx * 0.12, 1.0, 0.0)), n)
+    if hint is None:
+        # 발끝이 돌아가면 무릎도 그쪽으로 절반쯤 따라간다
+        hint = Matrix.Rotation(yaw * 0.6, 3, 'Z') @ Vector((sx * 0.12, 1.0, 0.0))
+    e = A.orth(Vector(hint), n)
     K = Hj + n * a + e * h
     Ac = Hj + n * dist
     X[g('thigh')] = frame_xf(REST[g('thigh')], (0, 0, -1), (0, 1, 0), Hj, K - Hj, e)
     X[g('shin')] = frame_xf(REST[g('shin')], (0, 0, -1), (0, 1, 0), K, Ac - K, e)
-    X[g('foot')] = Matrix.Translation(Ac) @ Matrix.Rotation(pitch, 4, 'X') @ Matrix.Translation(-REST[g('foot')])
+    X[g('foot')] = (Matrix.Translation(Ac) @ Matrix.Rotation(yaw, 4, 'Z') @ Matrix.Rotation(pitch, 4, 'X')
+                    @ Matrix.Translation(-REST[g('foot')]))
+
+
+# 제자리 돌기: 몸(그룹)은 게임이 TURN_ANGLE·turn_progress(u)만큼 돌린다. 클립은 그 회전을 발에서 되돌려, 디딘 발이 바닥에 붙어 있게 한다.
+# 도는 쪽 발을 먼저 떼어 새 자리에 놓고(앞 절반), 이어서 반대쪽 발을 옮긴다(뒤 절반). 처음과 끝 자세는 idle과 같다.
+# 더 작은 각은 게임에서 idle과 섞어 쓴다(GaitDir.ts의 startTurnStep). turn_progress는 GaitDir.turnYawProgress와 같은 식이어야 한다.
+TURN_N = 12
+TURN_ANGLE = math.pi / 2
+TURNS = {'turnL': 1, 'turnR': -1}
+IDLE_FEET = {'L': Vector((-0.125, 0.06, ANKLE_H)), 'R': Vector((0.125, -0.06, ANKLE_H))}
+
+
+def turn_progress(u):
+    return TL.ramp(u, 0.06, 0.94)
+
+
+def turn_feet(sg, u):
+    s = turn_progress(u)
+    first, second = ('L', 'R') if sg > 0 else ('R', 'L')
+    win = {first: (0.03, 0.50), second: (0.50, 0.97)}
+    feet = {}
+    for sfx in 'LR':
+        a0, a1 = win[sfx]
+        k = TL.ramp(u, a0, a1)
+        lin = min(1.0, max(0.0, (u - a0) / (a1 - a0)))
+        ang = sg * TURN_ANGLE * (k - s)
+        p0 = IDLE_FEET[sfx]
+        pos = Matrix.Rotation(ang, 3, 'Z') @ Vector((p0.x, p0.y, 0.0))
+        up = math.sin(math.pi * lin)
+        feet[sfx] = (Vector((pos.x, pos.y, ANKLE_H + 0.07 * up)), -0.22 * up, ang)
+    return feet
 
 
 def pose(clip, t):
@@ -419,6 +453,15 @@ def pose(clip, t):
         hipsX = Matrix.Translation((0.0, 0.0, -0.03 + 0.004 * br)) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.03)
         feet = {'L': (Vector((-0.125, 0.06, ANKLE_H)), 0.0), 'R': (Vector((0.125, -0.06, ANKLE_H)), 0.0)}
         lean, hyaw, bob, roll = 0.03, -0.06, 0.003 * br, 0.0
+    elif clip in TURNS:
+        sg = TURNS[clip]
+        u = min(1.0, max(0.0, t / (TURN_N / FPS)))
+        # 골반은 디딘 발 쪽으로 살짝 옮기고, 발을 옮기는 동안 조금 낮춘다
+        shift = 0.02 * sg * math.sin(math.tau * u)
+        dip = 0.022 * math.sin(math.pi * u)
+        hipsX = Matrix.Translation((shift, 0.0, -0.03 - dip)) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.03)
+        feet = turn_feet(sg, u)
+        lean, hyaw, bob, roll = 0.03, -0.06, 0.0, 0.0
     else:
         cfg = GAITS[clip]
         T = cfg['T']
@@ -451,8 +494,8 @@ def pose(clip, t):
         X[b] = X['armsgun']
     for sfx, sx in (('L', -1), ('R', 1)):
         Hj = hipsX @ Vector((sx * HIP_X, 0, HIP_Z))
-        tgt, pitch = feet[sfx]
-        solve_leg(sfx, sx, Hj, tgt, pitch, X)
+        ft = feet[sfx]
+        solve_leg(sfx, sx, Hj, ft[0], ft[1], X, yaw=ft[2] if len(ft) > 2 else 0.0)
     return X
 
 
@@ -589,6 +632,17 @@ if not ARMS_ONLY:
     for tt in (0.15, 0.35, 0.55, 0.85):
         shot(f'{PFX}_death_{int(tt * 100):03d}', 'death', tt, (4.4, -0.5, 1.0), look=(0, -0.5, 0.6))
     shot(f'{PFX}_air', 'air', 0.0, (3.8, 0.2, 1.0))
+    for q in (1, 2, 3):
+        shot(f'{PFX}_turnL_{q}', 'turnL', TURN_N / FPS * q / 4, (1.2, 3.0, 2.6), look=(0, 0, 0.5))
+    # 다리가 닿는지 확인: 골반 관절에서 발목까지의 거리 / 다리 길이
+    worst = 0.0
+    for i in range(TURN_N + 1):
+        for sg in (1, -1):
+            u = i / TURN_N
+            hx = Matrix.Translation((0.02 * sg * math.sin(math.tau * u), 0.0, -0.03 - 0.022 * math.sin(math.pi * u))) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.03)
+            for sfx, sx in (('L', -1), ('R', 1)):
+                worst = max(worst, ((hx @ Vector((sx * HIP_X, 0, HIP_Z))) - turn_feet(sg, u)[sfx][0]).length / (THIGH + SHIN))
+    print('TURN_REACH worst %.3f (must stay below 1)' % worst)
 if 'preview_only' in argv:
     print('PREVIEW_ONLY_DONE')
     sys.exit(0)
@@ -613,6 +667,7 @@ if ARMS_ONLY:
 else:
     acts = [bake('idle', 90, BODY)] + [bake(name, cfg['n'], BODY) for name, cfg in GAITS.items()]
     acts += [bake('death', round(DEATH_LEN * FPS), BODY), bake('air', 2, BODY)]
+    acts += [bake(name, TURN_N, BODY) for name in TURNS]
 if MODE in ('player', 'fp'):
     acts.append(bake('reload', round(TL.RELOAD_LEN * FPS), None if ARMS_ONLY else set(EXTRA)))
 slot_of = {a.name: (a.slots[0] if getattr(a, 'slots', None) else None) for a in acts}
