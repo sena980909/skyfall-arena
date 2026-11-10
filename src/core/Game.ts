@@ -380,9 +380,10 @@ export class Game {
   private warmupShaders(a: LoadedAssets): void {
     const t0 = performance.now();
     let dummy: import('three').Object3D | null = null;
-    if (a.raven) {
+    const skinned = a.botRig?.scene ?? a.raven?.scene;
+    if (skinned) {
       // 스킨드 메시 전용 셰이더 변형도 미리 컴파일
-      dummy = SkeletonUtils.clone(a.raven.scene);
+      dummy = SkeletonUtils.clone(skinned);
       dummy.position.set(0, -200, 0);
       this.scene.add(dummy);
     }

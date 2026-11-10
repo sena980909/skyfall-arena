@@ -9,6 +9,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 PARTS = []  # (object) 목록: 마지막에 하나의 메시로 합친다
+SEG_OVERRIDE = None  # 정수면 모든 베벨 분할 수의 상한
 MATS = {}
 
 
@@ -38,7 +39,12 @@ def material(name, color, rough=0.5, metal=0.0, emit=None, emit_strength=1.0):
     return m
 
 
+def _seg(n):
+    return n if SEG_OVERRIDE is None else min(n, SEG_OVERRIDE)
+
+
 def _finish(bm, name, mat, group, bevel=0.0, segments=2, xform=None, smooth_angle=35.0):
+    segments = _seg(segments)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     if bevel > 0:
         bmesh.ops.bevel(bm, geom=bm.edges[:], offset=bevel, offset_type='OFFSET', segments=segments,
@@ -82,7 +88,7 @@ def box(name, center, size, mat, group, bevel=0.002, rot=None, xform=None, segme
     if rot is not None:
         m = m @ rot.to_4x4()
     if bevel > 0:
-        bmesh.ops.bevel(bm, geom=bm.edges[:], offset=bevel, offset_type='OFFSET', segments=segments,
+        bmesh.ops.bevel(bm, geom=bm.edges[:], offset=bevel, offset_type='OFFSET', segments=_seg(segments),
                         profile=0.5, affect='EDGES', clamp_overlap=True)
     bmesh.ops.transform(bm, matrix=m, verts=bm.verts[:])
     return _finish(bm, name, mat, group, 0.0, segments, xform)
@@ -97,7 +103,7 @@ def cyl(name, p0, p1, r0, r1, mat, group, segments=16, bevel=0.0, xform=None, sm
     bm = bmesh.new()
     bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=segments, radius1=r0, radius2=r1, depth=length)
     if bevel > 0:
-        bmesh.ops.bevel(bm, geom=bm.edges[:], offset=bevel, offset_type='OFFSET', segments=2,
+        bmesh.ops.bevel(bm, geom=bm.edges[:], offset=bevel, offset_type='OFFSET', segments=_seg(2),
                         profile=0.5, affect='EDGES', clamp_overlap=True)
     rot = Vector((0, 0, 1)).rotation_difference(d.normalized()).to_matrix().to_4x4()
     m = Matrix.Translation((p0 + p1) / 2) @ rot

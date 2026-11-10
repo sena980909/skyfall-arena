@@ -34,7 +34,9 @@ const MEMORY_SECONDS = 3;
  * 클립의 발 접지 속도(m/s, 모델 스케일 1, timeScale 1). 재생 속도 = 실제 이동 속도 / 이 값 → 발이 미끄러지지 않는다.
  * 브라우저에서 발 본의 접지 구간 이동 속도를 재서 넣은 값.
  */
-const CLIP_SPEED = { run: 5.6, walk: 1.55, back: 1.43 };
+const CLIP_SPEED = { run: 5.6, jog: 3.0, walk: 1.55, back: 1.43 };
+/** Blender 제작 리그(bot_rig.glb)의 클립 속도: tools/blender/build_bot_rig.py의 GAITS와 같은 값 */
+const CLIP_SPEED_V2 = { run: 4.7, jog: 2.8, walk: 1.6, back: 3.2 };
 const ENGAGE_MAX = 20;
 const ENGAGE_MIN = 10;
 const RETREAT_COOLDOWN = 15;
@@ -95,7 +97,7 @@ export class Bot implements Hittable, Healable {
   // 비주얼
   private readonly bodyMat: MeshStandardMaterial;
   private readonly headMat: MeshStandardMaterial;
-  private readonly visorMat: MeshStandardMaterial;
+  private visorMat: MeshStandardMaterial;
   private readonly visorColor: number;
   private flashUntil = 0;
   // M3 모델/애니메이션
@@ -139,6 +141,11 @@ export class Bot implements Hittable, Healable {
   private facingYaw = 0;
   /** 손에 든 라이플의 총구 (모델 적용 시) */
   private rifleMuzzle: Object3D | null = null;
+  /** Blender 제작 리그 사용 여부. 팔·총이 armsgun 본 하나에 묶여 있어 IK·총 부착·장갑 확대가 필요 없다 */
+  private rigV2 = false;
+  /** 상하 조준용 본(armsgun). 어깨 축을 지나므로 돌려도 어깨가 떨어지지 않는다 */
+  private aimBone: Object3D | null = null;
+  private clipSpeed = CLIP_SPEED;
   /** 라이플 홀더(그룹 자식) + 오른손 본: 위치는 손, 방향은 조준 방향 */
   private rifleHolder: Group | null = null;
   private handBone: Object3D | null = null;
@@ -235,7 +242,84 @@ export class Bot implements Hittable, Healable {
     this.moveDir.copy(this.aimDir);
     this.facingYaw = yawOf(this.aimDir);
     this.lastPos.copy(spawn);
-    if (ctx.assets?.raven) this.applyModel(ctx.assets.raven.scene, ctx.assets.raven.clips, [visor, gun], [body, head]);
+    if (ctx.assets?.botRig) this.applyRigV2(ctx.assets.botRig.scene, ctx.assets.botRig.clips, [body, head]);
+    else if (ctx.assets?.raven) this.applyModel(ctx.assets.raven.scene, ctx.assets.raven.clips, [visor, gun], [body, head]);
+  }
+
+  /**
+   * Blender 제작 봇 리그로 비주얼 교체. 모델은 키 1.8m·발 원점·정면 -Z(glTF)로 만들어져 있어 크기·위치 보정이 없다.
+   * 재질은 이름으로 구분한다: bot_armor·armor_blue = 팀 색, bot_visor = 바이저, glow 계열 = 발광(피격 발광 대상에서 제외).
+   */
+  private applyRigV2(source: Group, clips: AnimationClip[], hitboxes: Mesh[]): void {
+    const model = skeletonClone(source) as Group;
+    model.rotation.y = Math.PI; // 봇 그룹은 +Z가 정면
+    const team = new Color(this.isBoss ? 0xd81e1e : 0xff6a2a);
+    const cache = new Map<unknown, MeshStandardMaterial>();
+    model.traverse((o) => {
+      const m = o as Mesh;
+      if (!m.isMesh) return;
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      const out = mats.map((orig) => {
+        let mm = cache.get(orig);
+        if (!mm) {
+          mm = (orig as MeshStandardMaterial).clone();
+          mm.envMapIntensity = 0.4;
+          if (mm.name === 'bot_armor') mm.color.copy(team);
+          else if (mm.name === 'armor_blue') mm.color.copy(team).multiplyScalar(0.5);
+          if (mm.name === 'bot_visor') {
+            mm.color.setHex(this.visorColor);
+            mm.emissive.setHex(this.visorColor);
+            mm.emissiveIntensity = 0.9;
+            this.visorMat = mm;
+          } else if (/glow/.test(mm.name)) {
+            if (this.isBoss) mm.emissive.setHex(0xff3020);
+            mm.emissiveIntensity = 1.3;
+          } else {
+            mm.emissive = new Color(0x000000);
+            mm.emissiveIntensity = 1;
+            this.skinMats.push(mm);
+          }
+          cache.set(orig, mm);
+        }
+        return mm;
+      });
+      m.material = out.length === 1 ? out[0] : out;
+      m.castShadow = true;
+      m.frustumCulled = false;
+    });
+    // 자리표시 메시(바이저·총·보스 어깨판)는 숨기고 히트박스는 보이지 않게만
+    for (const c of this.group.children) if ((c as Mesh).isMesh && !hitboxes.includes(c as Mesh)) c.visible = false;
+    for (const h of hitboxes) {
+      const mat = h.material as MeshStandardMaterial;
+      mat.colorWrite = false;
+      mat.depthWrite = false;
+    }
+    this.group.add(model);
+    const torso = model.getObjectByName('torso');
+    if (torso) this.spineBones = [torso];
+    this.aimBone = model.getObjectByName('armsgun') ?? null;
+    this.rifleMuzzle = model.getObjectByName('muzzle') ?? null;
+    this.rigV2 = true;
+    this.clipSpeed = CLIP_SPEED_V2;
+    this.mixer = new AnimationMixer(model);
+    for (const clip of clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    this.playAnim(this.actions.idle ? 'idle' : Object.keys(this.actions)[0], 0.15, true);
+  }
+
+  /** 상하 조준: 교전 중엔 조준 피치, 아니면 총구를 내린 로우레디. 사격 반동은 짧게 위로 */
+  private applyAimPitch(dt: number): void {
+    const engaged = this.canSee || this.ctx.now < this.shootUntil || (this.state === 'combat' && this.mode === 'hiding');
+    this.rifleEngage += ((engaged ? 1 : 0) - this.rifleEngage) * Math.min(1, dt * 6);
+    if (!this.aimBone) return;
+    const aimPitch = Math.asin(Math.max(-1, Math.min(1, this.aimDir.y / (this.aimDir.length() || 1))));
+    const pitch = Math.max(-0.9, Math.min(0.9, aimPitch * this.rifleEngage - 0.5 * (1 - this.rifleEngage) + this.rifleKick * 1.5));
+    this.rifleKick *= 0.8;
+    // 상체가 향하는 방향 f에 대해 f × up 축으로 돌리면 양수 각이 총구를 든다
+    const yaw = this.facingYaw + this.torsoTwist;
+    this.tmp.set(-Math.cos(yaw), 0, Math.sin(yaw));
+    this.ikQ.setFromAxisAngle(this.tmp, pitch);
+    this.applyWorldRotation(this.aimBone, this.ikQ);
+    this.aimBone.updateMatrixWorld(true);
   }
 
   /** 힉스필드 레이븐 GLB로 비주얼 교체. 히트박스(캡슐/구)는 보이지 않게 유지 */
@@ -400,7 +484,7 @@ export class Bot implements Hittable, Healable {
   private ensurePoseBones(): Object3D[] {
     if (!this.poseBones) {
       const list: Object3D[] = [...this.spineBones];
-      for (const b of [this.ikUpper, this.ikFore, this.ikHand, this.ikR?.upper, this.ikR?.fore, this.ikR?.hand]) if (b) list.push(b);
+      for (const b of [this.aimBone, this.ikUpper, this.ikFore, this.ikHand, this.ikR?.upper, this.ikR?.fore, this.ikR?.hand]) if (b) list.push(b);
       this.poseBones = list;
       this.poseClean = list.map((b) => b.quaternion.clone());
     }
@@ -544,7 +628,7 @@ export class Bot implements Hittable, Healable {
     if (!next) return;
     const now = this.ctx.now;
     // 최소 0.2초는 같은 클립 유지 (사망 등 강제 전환 제외)
-    if (!force && now < this.animHoldUntil) return;
+    if (!force && this.currentAnim !== 'idle' && now < this.animHoldUntil) return;
     this.animHoldUntil = now + 0.2;
     if ((this.animWeights[name] ?? 0) < 0.01) next.reset();
     next.enabled = true;
@@ -593,7 +677,8 @@ export class Bot implements Hittable, Healable {
     const now = this.ctx.now;
     this.velocity.copy(this.ctrl.pos).sub(this.lastPos).divideScalar(Math.max(dt, 1e-4));
     this.lastPos.copy(this.ctrl.pos);
-    const k = Math.min(1, dt * 6);
+    // 빠른 평활화(약 55ms): 방향 전환을 바로 따라가되 충돌로 인한 한 프레임 튐은 걸러낸다
+    const k = Math.min(1, dt * 18);
     this.smoothVel.x += (this.velocity.x - this.smoothVel.x) * k;
     this.smoothVel.z += (this.velocity.z - this.smoothVel.z) * k;
     const speed = Math.hypot(this.smoothVel.x, this.smoothVel.z);
@@ -615,26 +700,25 @@ export class Bot implements Hittable, Healable {
     if (!this.torsoInit) this.legsYaw = this.facingYaw;
     if (this.moving) {
       const moveYaw = Math.atan2(this.smoothVel.x, this.smoothVel.z);
-      if (engaged && speed < 1.2) {
-        this.legsYaw = aimYaw;
-      } else if (speed > 0.9) {
+      // 느릴 때(방향 전환 순간 등)는 속도 방향이 불안정하므로 직전 다리 방향을 유지한다
+      if (speed > 0.9) {
+        // 교전 중: 이동이 조준과 110° 넘게 벌어지면 뒷걸음, 80° 안이면 전진.
+        // 그 사이(옆걸음)는 지금 다리 방향에 가까운 쪽을 고른다 → 좌우로 방향을 뒤집어도 다리를 180° 돌리지 않고 앞걸음/뒷걸음만 바꾼다
         let back = false;
         if (engaged) {
           const rel = Math.abs(wrap(moveYaw - aimYaw));
-          // 히스테리시스(110°/80°) + 최소 0.5초 유지
-          back = this.backpedal ? rel > 1.4 : rel > 1.92;
+          if (rel > 1.92) back = true;
+          else if (rel < 1.4) back = false;
+          else back = Math.abs(wrap(moveYaw + Math.PI - this.facingYaw)) < Math.abs(wrap(moveYaw - this.facingYaw));
         }
-        if (back !== this.backpedal && now >= this.backHoldUntil) {
-          this.backpedal = back;
-          this.backHoldUntil = now + 0.5;
-        }
-        this.legsYaw = this.backpedal ? moveYaw + Math.PI : moveYaw;
+        this.backpedal = back;
+        this.legsYaw = back ? moveYaw + Math.PI : moveYaw;
       }
     } else {
       this.legsYaw = aimYaw;
       if (now >= this.backHoldUntil) this.backpedal = false;
     }
-    const maxTurn = 7 * dt; // ≈ 400°/s
+    const maxTurn = (this.moving ? 7 : 4) * dt; // 이동 중 ≈ 400°/s, 제자리에서는 천천히
     this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, wrap(this.legsYaw - this.facingYaw)));
     this.group.rotation.y = this.facingYaw;
     // 상체: 월드 기준 요를 따로 두고 교전 중엔 조준 방향, 아니면 다리 방향을 각속도 제한(≈570°/s)으로 따라간다.
@@ -660,31 +744,41 @@ export class Bot implements Hittable, Healable {
         this.actions.shoot.timeScale = 0.12;
       } else if (this.actions.idle) this.playAnim('idle');
     } else {
-      const sp = speed / (this.group.scale.x || 1);
+      // 정지에서 출발할 때는 평활화 전 속도로 클립을 고른다(봇은 즉시 최고 속도가 되므로 걷기 클립을 거치면 발이 미끄러진다)
+      const rawSp = Math.hypot(this.velocity.x, this.velocity.z);
+      const sp = (this.currentAnim === 'idle' ? Math.max(speed, rawSp) : speed) / (this.group.scale.x || 1);
       const ts = (clipSpeed: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, sp / clipSpeed));
+      const cs = this.clipSpeed;
       if (this.backpedal && this.actions.back) {
         this.playAnim('back', 0.15);
-        this.actions.back.timeScale = ts(CLIP_SPEED.back, 0.5, 2.7);
+        this.actions.back.timeScale = ts(cs.back, 0.5, 2.7);
       } else if (this.backpedal && this.actions.walk) {
         this.playAnim('walk', 0.15);
-        this.actions.walk.timeScale = -ts(CLIP_SPEED.walk, 0.5, 2.2);
-      } else if (this.backpedal && this.actions.run) {
-        this.playAnim('run', 0.15);
-        this.actions.run.timeScale = -ts(CLIP_SPEED.run, 0.4, 1.4);
-      } else if (this.actions.walk && sp < CLIP_SPEED.walk * (this.currentAnim === 'run' ? 1.75 : 2.05)) {
-        this.playAnim('walk', 0.15);
-        this.actions.walk.timeScale = ts(CLIP_SPEED.walk, 0.5, 2.2);
-      } else if (this.actions.run) {
-        this.playAnim('run', 0.15);
-        this.actions.run.timeScale = ts(CLIP_SPEED.run, 0.4, 1.4);
+        this.actions.walk.timeScale = -ts(cs.walk, 0.5, 2.2);
+      } else {
+        // 전진: 속도에 가장 가까운 클립(걷기·조깅·달리기). 경계는 두 클립 속도의 기하평균, ±8% 히스테리시스
+        const cands = (['walk', 'jog', 'run'] as const).filter((n) => this.actions[n]);
+        let pick = cands[0];
+        for (let i = 0; i < cands.length - 1; i++) {
+          const thr = Math.sqrt(cs[cands[i]] * cs[cands[i + 1]]);
+          const hyst = this.currentAnim === cands[i + 1] ? 0.92 : this.currentAnim === cands[i] ? 1.08 : 1;
+          if (sp > thr * hyst) pick = cands[i + 1];
+        }
+        if (pick) {
+          this.playAnim(pick, 0.15);
+          this.actions[pick].timeScale = ts(cs[pick], 0.5, pick === 'walk' ? 2.2 : 1.5);
+        }
       }
     }
     this.updateMixer(dt);
     this.applyTorsoTwist();
     this.group.updateMatrixWorld(true);
-    this.applyArmorBulk();
-    this.updateRifleTransform(dt, speed);
-    this.solveArmsIK();
+    if (this.rigV2) this.applyAimPitch(dt);
+    else {
+      this.applyArmorBulk();
+      this.updateRifleTransform(dt, speed);
+      this.solveArmsIK();
+    }
     if (speed > 1.0 && this.ctrl.onGround) {
       this.stepTimer += dt * speed;
       if (this.stepTimer > 2.2) {

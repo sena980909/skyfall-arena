@@ -118,6 +118,17 @@ M1에서 구현됨
 - 다시 만들기: `blender -b --factory-startup --python tools/blender/build_fp_rig.py -- <프로젝트 절대경로>` (미리보기 렌더만: 끝에 `preview_only`).
 - 참고 도면은 힉스필드로 생성(`assets_src/reference/`).
 
+### Blender 에셋 파이프라인 B2: 적 봇 리그
+
+적 봇도 Blender에서 직접 만든 리그(`public/assets/models/bot_rig.glb`, 10.9k tris, 본 11개, 클립 5개, 0.91MB)를 쓴다. 새 리그가 있으면 이전 에셋(raven.glb, 라이브러리 클립, pulse_rifle.glb)은 내려받지 않는다.
+
+- 소스: `tools/blender/build_bot_rig.py`(몸·다리 모델링, 보행 생성, 굽기), `arm_lib.py`(팔·손 공용 모듈). 결과 `.blend`는 `assets_src/bot_rig.blend`.
+- 본 구조: hips → torso → (head, armsgun → muzzle), 다리 6본. 팔과 라이플은 조준 자세 그대로 armsgun 본 하나에 묶여 있어 손이 총에서 떨어질 수 없다. 게임은 torso를 돌려 상체를 조준 방향으로 틀고(`applyTorsoTwist`), armsgun을 어깨 축으로 돌려 상하 조준과 로우레디를 만든다(`applyAimPitch`). 게임 쪽 IK·총 부착·장갑 확대 코드는 새 리그에서 쓰지 않는다.
+- 이동 클립(walk 1.6 / jog 2.8 / run 4.7 / back 3.2 m/s)은 제자리 클립이고, 접지한 발이 정확히 그 속도로 뒤로 움직이도록 다리를 IK로 계산해 구웠다. 게임은 속도에 가장 가까운 클립을 골라 재생 속도 = 이동 속도 / 클립 속도로 맞춘다.
+- 옆걸음 방향을 뒤집을 때는 다리를 180° 돌리지 않고 앞걸음/뒷걸음만 바꾼다.
+- 실측(NORMAL 오토파일럿 한 판, 봇 23기): 접지한 발의 미끄러짐 중앙값 run 0.00 / jog 0.02 / back 0.06 / walk 0.22 m/s, 1초 안에 상체가 360° 넘게 돈 봇 0기.
+- 재질 이름으로 팀 색을 입힌다: `bot_armor`·`armor_blue` = 팀 색(일반 주황, 보스 빨강), `bot_visor` = 바이저, `*glow*` = 발광.
+
 ## 플레이테스트 (오토파일럿)
 
 `src/dev/Autopilot.ts`는 사람처럼 플레이어를 조작한다(순찰 조준에서 임시 벡터가 겹쳐 항상 +z 벽을 보던 버그 수정)(반응시간·조준 오차·추적 속도·버스트·스트레이프·스킬 판단). 프로필: casual / average / good.
