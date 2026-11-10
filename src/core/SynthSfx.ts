@@ -338,6 +338,34 @@ export class SynthSfx {
     for (const [i, f] of [523, 659, 784, 1047].entries()) this.tone(this.bus, t + 0.04 + i * 0.07, 'sine', f, f, 0.22, 0.16, { attack: 0.005 });
   }
 
+  /** 경보: 높고 낮은 두 음이 다섯 번 오간다(약 3.5초) */
+  alarm(): void {
+    const t = this.ctx.currentTime;
+    for (let i = 0; i < 5; i++) {
+      this.tone(this.bus, t + i * 0.7, 'sawtooth', 620, 620, 0.34, 0.16, { attack: 0.02, lp: [1500, 1100], curve: 'lin' });
+      this.tone(this.bus, t + i * 0.7 + 0.35, 'sawtooth', 470, 470, 0.34, 0.16, { attack: 0.02, lp: [1300, 900], curve: 'lin' });
+    }
+    this.tone(this.bus, t, 'sine', 70, 55, 3.4, 0.2, { attack: 0.05, curve: 'lin' });
+  }
+
+  /** 무거운 문이 열린다: 풀리는 쇳소리 → 밀리는 소리 → 멈추는 소리 */
+  door(): void {
+    const t = this.ctx.currentTime;
+    this.noise(this.bus, t, 0.06, 0.5, { bp: [900, 500, 2], attack: 0.002 });
+    this.tone(this.bus, t, 'sine', 95, 60, 0.3, 0.45, { attack: 0.005 });
+    this.noise(this.bus, t + 0.12, 1.1, 0.22, { lp: [700, 260], attack: 0.15, curve: 'lin' });
+    this.tone(this.bus, t + 0.12, 'sawtooth', 58, 74, 1.1, 0.08, { attack: 0.2, lp: [300, 220], curve: 'lin' });
+    this.noise(this.bus, t + 1.2, 0.08, 0.5, { bp: [500, 240, 2], attack: 0.002 });
+    this.tone(this.bus, t + 1.2, 'sine', 80, 45, 0.35, 0.5, { attack: 0.005 });
+  }
+
+  /** 무전이 열리는 짧은 소리 */
+  radio(): void {
+    const t = this.ctx.currentTime;
+    this.noise(this.bus, t, 0.05, 0.1, { hp: 2600 });
+    this.tone(this.bus, t + 0.03, 'sine', 1250, 1250, 0.07, 0.07, { attack: 0.004 });
+  }
+
   /** 웨이브 시작: 간단한 두 음 알림 (띵-띵) + 가벼운 저음 */
   waveStart(): void {
     const t = this.ctx.currentTime;

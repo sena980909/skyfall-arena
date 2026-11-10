@@ -46,6 +46,13 @@ const ENGAGE_MAX = 20;
 /** 저격병 총열 길이(m) */
 const BARREL_LEN = 0.5;
 const RETREAT_COOLDOWN = 15;
+/**
+ * 속도가 바라는 값으로 따라붙는 시간 상수(초). 전에는 바라는 속도가 그 프레임에 그대로 적용되어 출발·정지·방향 전환이 한 프레임에 끝났다
+ * (옆걸음을 뒤집는 순간 가속도 350 m/s² 이상). 0.16이면 정지에서 제 속도의 86%까지 0.3초쯤 걸린다
+ */
+const MOVE_TAU = 0.16;
+/** 순찰(플레이어를 모를 때)은 걷는다: 이동 속도의 이 비율 */
+const PATROL_SPEED = 0.4;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
 import {
@@ -219,6 +226,10 @@ export class Bot implements Hittable, Healable {
   private readonly tmp2 = new Vector3();
   private readonly tmp3 = new Vector3();
   private readonly wish = new Vector3();
+  /** 지금 수평 속도(바라는 속도 wish를 서서히 따라간다) */
+  private readonly hv = new Vector3();
+  /** 교전 중 서서 쏘는 구간인가(옆걸음과 번갈아) */
+  private planted = false;
   private readonly desired = new Vector3();
 
   get position(): Vector3 {
@@ -897,7 +908,7 @@ export class Bot implements Hittable, Healable {
       this.turnStep = null;
       this.turnWait = 0;
     }
-    const maxTurn = (this.moving ? 7 : 4) * dt; // 이동 중 ≈ 400°/s, 제자리에서는 천천히
+    const maxTurn = (this.moving ? 5.5 : 4) * dt; // 이동 중 ≈ 315°/s, 제자리에서는 천천히
     let legTurn = wrap(this.legsYaw - this.facingYaw);
     // 거의 반대로 돌아야 할 때(뒷걸음 → 돌아서 달리기)는 조준 쪽을 지나가는 방향으로 돈다.
     // 반대쪽으로 돌면 상체가 다리에 끌려갔다가 다시 조준으로 돌아오면서 제자리에서 한 바퀴 돌게 된다.
@@ -1184,7 +1195,7 @@ export class Bot implements Hittable, Healable {
     if (this.blinded) {
       // 실명: 제자리에서 비틀거림
       this.wish.set(Math.sin(now * 7) * 1.2, 0, Math.cos(now * 5) * 1.2);
-      this.ctrl.moveAndSlide(dt, this.wish);
+      this.drive(dt, this.wish);
       this.group.position.copy(this.ctrl.pos);
       return;
     }
@@ -1408,10 +1419,26 @@ export class Bot implements Hittable, Healable {
     return this.pathIdx >= this.path.length;
   }
 
+  /**
+   * 수평 속도를 바라는 속도에 서서히 맞춘 뒤 움직인다(가속·감속·방향 전환에 시간이 걸린다).
+   * 돌려주는 값은 막힘 판정용: 바라는 속도로 갔어야 할 거리에, 지금 속도로 실제 나아간 비율을 곱한 것.
+   * 속도가 붙는 중이라고 해서 막힌 것으로 세지 않는다.
+   */
+  private drive(dt: number, wish: Vector3): number {
+    const k = 1 - Math.exp(-dt / MOVE_TAU);
+    this.hv.x += (wish.x - this.hv.x) * k;
+    this.hv.z += (wish.z - this.hv.z) * k;
+    const target = Math.hypot(wish.x, wish.z);
+    const now = Math.hypot(this.hv.x, this.hv.z);
+    if (target === 0 && now < 0.08) this.hv.set(0, 0, 0);
+    const moved = this.ctrl.moveAndSlide(dt, this.hv);
+    return now > 0.3 ? (moved / (now * dt)) * target * dt : target * dt;
+  }
+
   /** 경로 따라 이동. 도착 시 true */
   private followPath(dt: number, speed: number): boolean {
     if (this.pathArrived()) {
-      this.ctrl.moveAndSlide(dt, this.wish.set(0, 0, 0));
+      this.drive(dt, this.wish.set(0, 0, 0));
       return true;
     }
     const target = this.path[this.pathIdx];
@@ -1429,7 +1456,7 @@ export class Bot implements Hittable, Healable {
     if (dy < -0.8) dist = Math.max(dist, 0.6);
     this.moveDir.copy(dir);
     this.wish.copy(dir).multiplyScalar(speed);
-    const moved = this.ctrl.moveAndSlide(dt, this.wish);
+    const moved = this.drive(dt, this.wish);
     if (moved < speed * dt * 0.25 && this.ctrl.onGround) {
       this.stuckTimer += dt;
       // 거의 완전히 멈춘 프레임만 누적 (낙하·착지·회전 중 느린 프레임은 제외)
@@ -1448,7 +1475,9 @@ export class Bot implements Hittable, Healable {
       } else if (this.stuckTimer > 0.5) {
         this.nextRepath = 0;
         this.stuckTimer = 0;
-        this.ctrl.moveAndSlide(dt, this.wish.set(-dir.z, 0, dir.x).multiplyScalar(speed));
+        // 옆으로 비켜서기: 이 한 프레임은 속도를 바로 바꾼다(서서히 바꾸면 벽에 붙은 채 그대로다)
+        this.hv.copy(this.wish.set(-dir.z, 0, dir.x).multiplyScalar(speed));
+        this.ctrl.moveAndSlide(dt, this.hv);
       }
     } else {
       this.stuckTimer = 0;
@@ -1458,7 +1487,7 @@ export class Bot implements Hittable, Healable {
   }
 
   private stand(dt: number): void {
-    this.ctrl.moveAndSlide(dt, this.wish.set(0, 0, 0));
+    this.drive(dt, this.wish.set(0, 0, 0));
   }
 
   private patrol(dt: number): void {
@@ -1466,7 +1495,7 @@ export class Bot implements Hittable, Healable {
       this.patrolTarget = this.ctx.nav.randomWalkable();
       this.setPathTo(this.patrolTarget);
     }
-    this.followPath(dt, this.moveSpeed * 0.6);
+    this.followPath(dt, this.moveSpeed * PATROL_SPEED);
   }
 
   private chase(dt: number): void {
@@ -1550,7 +1579,7 @@ export class Bot implements Hittable, Healable {
     const speed = this.moveSpeed * (this.isBoss ? 0.75 : 0.85);
     // 저격병은 조준선을 비추는 동안 멈춰 선다
     if (this.chargeAt >= 0) {
-      this.ctrl.moveAndSlide(dt, this.wish.set(0, 0, 0));
+      this.drive(dt, this.wish.set(0, 0, 0));
       return;
     }
     const heightGap = ctx.player.position.y - this.ctrl.pos.y;
@@ -1567,7 +1596,7 @@ export class Bot implements Hittable, Healable {
     if (dist < this.engageMin && !this.isBoss) {
       this.wish.copy(toP).multiplyScalar(-speed * 0.8);
       this.moveDir.copy(toP).negate();
-      const moved = this.ctrl.moveAndSlide(dt, this.wish);
+      const moved = this.drive(dt, this.wish);
       if (moved < speed * dt * 0.2) this.strafe(dt, toP, speed);
       return;
     }
@@ -1576,17 +1605,28 @@ export class Bot implements Hittable, Healable {
 
   private strafe(dt: number, toP: Vector3, speed: number): void {
     const now = this.ctx.now;
+    // 옆걸음과 '서서 쏘기'를 번갈아 한다. 전에는 쉬지 않고 좌우로 오가며 1.2~2.2초마다 방향을 그 자리에서 뒤집었다
     if (now >= this.nextStrafeFlip) {
-      this.nextStrafeFlip = now + randRange(1.2, 2.2);
-      this.strafeDir *= -1;
+      this.planted = !this.planted;
+      if (this.planted) this.nextStrafeFlip = now + randRange(this.def.plant[0], this.def.plant[1]);
+      else {
+        this.nextStrafeFlip = now + randRange(1.0, 2.0);
+        if (Math.random() < 0.7) this.strafeDir *= -1;
+      }
+    }
+    if (this.planted) {
+      this.drive(dt, this.wish.set(0, 0, 0));
+      return;
     }
     // 옆걸음은 느리게 (크라우치 사이드스텝 클립과 맞고, 맞히기도 쉬워짐)
     this.wish.set(toP.z, 0, -toP.x).multiplyScalar(this.strafeDir * speed * 0.55);
     this.moveDir.copy(this.wish).normalize();
-    const moved = this.ctrl.moveAndSlide(dt, this.wish);
+    const moved = this.drive(dt, this.wish);
     if (moved < speed * dt * 0.2) {
+      // 막혔다: 그 자리에 서서 쏘고, 다음에는 반대쪽으로 간다
       this.strafeDir *= -1;
-      this.nextStrafeFlip = now + randRange(1.0, 1.8);
+      this.planted = true;
+      this.nextStrafeFlip = now + randRange(this.def.plant[0], this.def.plant[1]);
     }
   }
 

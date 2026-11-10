@@ -176,6 +176,7 @@ export class Game {
       onVictory: () => this.endGame(true),
       onDefeat: (reason) => this.endGame(false, reason),
       setGate: (open) => this.setGate(open),
+      setDoor: (open) => this.setDoor(open),
     });
 
     if (mobile) {
@@ -325,9 +326,18 @@ export class Game {
     this.ctx.nav = this.nav;
   }
 
+  /** 관제동 정문을 여닫고 길찾기 격자를 다시 만든다. 닫혀 있으면 관제동 안만 도달 가능 영역이 된다 */
+  private setDoor(open: boolean): void {
+    if (this.map.doorOpen === open) return;
+    this.map.setDoor(open);
+    this.nav = new NavGrid(this.map, MISSION_START);
+    this.ctx.nav = this.nav;
+  }
+
   private startGame(): void {
     this.sfx.init();
     this.setGate(false);
+    this.setDoor(false);
     for (const b of this.bots) {
       this.scene.remove(b.group, b.debugLine);
     }

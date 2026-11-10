@@ -26,7 +26,10 @@ export interface EnemyDef {
   label: string;
   hpMult: number;
   scale: number;
+  /** 달리는 속도 = 영웅 이동 속도(5.5 m/s) x 이 값. 플레이어 걷기 5.5, 달리기 8.25와 견줘 정한다 */
   speedMult: number;
+  /** 교전 중 옆걸음을 멈추고 서서 쏘는 시간(초, 최소·최대). 옆걸음과 번갈아 한다 */
+  plant: [number, number];
   /** 교전 거리: engageMax보다 멀면 다가가고 engageMin보다 가까우면 물러난다 */
   engageMin: number;
   engageMax: number;
@@ -62,15 +65,15 @@ const SMG: WeaponDef = {
 
 export const ENEMIES: Record<EnemyKind, EnemyDef> = {
   trooper: {
-    kind: 'trooper', label: '돌격병', hpMult: 1, scale: 1, speedMult: 1, engageMin: 10, engageMax: 20, aimSigmaMult: 1,
+    kind: 'trooper', label: '돌격병', hpMult: 1, scale: 1, speedMult: 0.8, plant: [1.0, 2.2], engageMin: 10, engageMax: 20, aimSigmaMult: 1,
     weapon: RAVEN.weapon, hue: null, tint: null, visor: 0xffd166, glow: null, bolt: 0xff8a5a,
   },
   rusher: {
-    kind: 'rusher', label: '돌입병', hpMult: 0.7, scale: 0.9, speedMult: 1.15, engageMin: 3, engageMax: 6, aimSigmaMult: 1,
+    kind: 'rusher', label: '돌입병', hpMult: 0.7, scale: 0.9, speedMult: 1.0, plant: [0.3, 0.7], engageMin: 3, engageMax: 6, aimSigmaMult: 1,
     weapon: SMG, hue: 'brg', tint: [0.9, 0.7, 0.7], visor: 0x7dff4a, glow: 0x58ff3a, bolt: 0xa8ff5a,
   },
   marksman: {
-    kind: 'marksman', label: '저격병', hpMult: 0.8, scale: 1, speedMult: 0.9, engageMin: 18, engageMax: 45, aimSigmaMult: 0.15,
+    kind: 'marksman', label: '저격병', hpMult: 0.8, scale: 1, speedMult: 0.7, plant: [1.2, 2.4], engageMin: 18, engageMax: 45, aimSigmaMult: 0.15,
     weapon: RAVEN.weapon, hue: 'rbg', tint: [0.7, 0.62, 0.7], visor: 0xff3bd0, glow: 0xff2ac0, bolt: 0xff3bd0,
     shot: { charge: 1.2, lock: 0.25, cooldown: 2.6, damage: 75, range: 120 },
   },

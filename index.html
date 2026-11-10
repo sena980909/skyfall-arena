@@ -126,6 +126,16 @@
     @media (orientation: portrait) { body.touch #rotate-hint { display: flex; } }
     #objmark { position: absolute; transform: translate(-50%, -50%); text-align: center; pointer-events: none; color: #7ff0ff; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-shadow: 0 1px 6px rgba(0,0,0,.8); white-space: nowrap; }
     #objmark.hidden, #interact.hidden { display: none; }
+    /* 막 제목 */
+    #chapter { position: absolute; left: 50%; top: 21%; transform: translateX(-50%); text-align: center; opacity: 0; pointer-events: none; text-shadow: 0 2px 10px rgba(0,0,0,.9); }
+    #chapter.show { animation: chap 4.5s ease-out forwards; }
+    #chapter-t { font-size: 30px; font-weight: 900; letter-spacing: 8px; }
+    #chapter-t::after { content: ''; display: block; width: 120px; height: 2px; margin: 10px auto 8px; background: #7fe0ff; }
+    #chapter-s { font-size: 14px; letter-spacing: 3px; opacity: .85; }
+    @keyframes chap { 0% { opacity: 0; letter-spacing: 0; } 14% { opacity: 1; } 78% { opacity: 1; } 100% { opacity: 0; } }
+    body.touch #chapter { top: 16%; }
+    body.touch #chapter-t { font-size: 20px; letter-spacing: 5px; }
+    body.touch #chapter-s { font-size: 11px; }
     /* 무전 자막(임무의 이야기·다음 할 일) */
     #comm { position: absolute; left: 50%; bottom: 128px; transform: translateX(-50%); width: max-content; max-width: min(640px, 84vw); background: rgba(10, 18, 30, .78); border-left: 3px solid #7fe0ff; border-radius: 4px; padding: 9px 16px; font-size: 15px; line-height: 1.5; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
     #comm.hidden { display: none; }
@@ -216,6 +226,7 @@
       <div class="l" style="transform: translate(7px,4px) rotate(45deg)"></div>
     </div>
     <div id="hsbanner">HEADSHOT</div>
+    <div id="chapter"><div id="chapter-t"></div><div id="chapter-s"></div></div>
     <div id="comm" class="hidden"><span id="comm-who"></span><span id="comm-say"></span></div>
     <div id="dmgdir"></div>
     <div id="vignette"></div>
@@ -229,7 +240,7 @@
   <div id="ov-menu" class="overlay loading">
     <h1>SKYFALL ARENA</h1>
     <div class="sub">PROTOTYPE · 임무: 탈출</div>
-    <div class="story">공중 화물 기지 <b>스카이독</b>. 아르고스 보안군이 화물 항로를 조작해 물자를 빼돌리고 있다.<br/>증거를 찾아 관제동에 잠입한 정찰 요원 <b>레이븐</b> — 경보가 울렸다. 기록을 들고 살아서 나가라. <b>부활은 없다.</b></div>
+    <div class="story">공중 화물 기지 <b>스카이독</b>. 아르고스 보안군이 화물 항로를 조작해 물자를 빼돌리고 있다.<br/>증거를 찾아 관제동에 숨어든 정찰 요원 <b>레이븐</b>. 아직 아무도 모른다. 기록을 찾고, 살아서 나가라. <b>부활은 없다.</b></div>
     <div class="row" id="difficulty">
       <button class="btn" data-d="easy">EASY</button>
       <button class="btn sel" data-d="normal">NORMAL</button>

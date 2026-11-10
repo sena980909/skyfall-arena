@@ -5,6 +5,9 @@ import {
   SRGBColorSpace, Texture, Vector3,
 } from 'three';
 
+/** 경보 때 관제동 실내 조명이 물드는 색 */
+const ALARM_COLOR = new Color(0xff3a28);
+
 /** 키트 모듈의 기준 크기 [x 길이, y 높이, z 깊이] — tools/blender/build_map_kit.py와 같은 값 */
 const KIT_REF: Record<string, [number, number, number]> = {
   container: [6, 2.5, 2.5], crate: [2, 1, 2], crate_tall: [2, 2, 2], barrier: [6, 1.1, 0.6],
@@ -68,6 +71,15 @@ export class GreyboxMap {
   gateOpen = false;
   private gateMesh!: Mesh;
   private gateBox!: Box3;
+  /** 관제동 정문(야드 북벽의 출입구). 임무에서 봉쇄가 풀릴 때까지 닫혀 있다. 두 짝이 좌우 벽 속으로 밀려 들어가며 열린다 */
+  doorOpen = false;
+  private doorLeaves: Mesh[] = [];
+  private doorBoxes: Box3[] = [];
+  private doorSlide = 0;
+  /** 경보: 관제동 천장 조명판과 실내 조명이 붉게 깜박인다 */
+  private alarm = false;
+  private panelMat: MeshStandardMaterial | null = null;
+  private lightBase: { color: Color; intensity: number }[] = [];
   private readonly extraFloors: { mat: MeshStandardMaterial; sx: number; sz: number }[] = [];
 
   private readonly matFloor = new MeshStandardMaterial({ color: 0x3a4250, roughness: 0.95 });
@@ -333,6 +345,26 @@ export class GreyboxMap {
     this.addBox(-17, 0, -121.5, 28, 6, 1, this.matWall, true, 'wall');
     this.addBox(17, 0, -121.5, 28, 6, 1, this.matWall, true, 'wall');
     this.addBox(0, 4.7, -121.5, 6, 1.3, 1, this.matRack);
+    // 관제동 정문: 두 짝(각 3m). 닫힌 채로 시작한다(setDoor)
+    const doorPlateMat = new MeshStandardMaterial({ color: 0x4a586c, roughness: 0.5, metalness: 0.6 });
+    for (const side of [-1, 1]) {
+      const leaf = this.addBox(side * 1.5, 0, -121.5, 3, 4.7, 0.5, gateMat, true, undefined, false);
+      this.doorBoxes.push(this.colliders[this.colliders.length - 1]);
+      for (const y of [-1.25, 0.95]) {
+        const strip = new Mesh(new BoxGeometry(2.5, 0.16, 0.56), stripMat);
+        strip.position.y = y;
+        leaf.add(strip);
+      }
+      // 문짝 가운데의 돋은 판과 맞물리는 모서리의 테(밋밋한 판 하나로 보이지 않게)
+      const plate = new Mesh(new BoxGeometry(2.2, 1.5, 0.6), doorPlateMat);
+      plate.position.y = -0.15;
+      const edge = new Mesh(new BoxGeometry(0.14, 4.7, 0.62), doorPlateMat);
+      edge.position.x = -side * 1.43;
+      const foot = new Mesh(new BoxGeometry(3, 0.5, 0.58), doorPlateMat);
+      foot.position.y = -2.1;
+      leaf.add(plate, edge, foot);
+      this.doorLeaves.push(leaf);
+    }
     this.addBox(-16, 0, -82, 6, 2.5, 2.5, this.matContainer, true, 'container');
     this.addBox(16, 0, -108, 6, 2.5, 2.5, this.matContainer, true, 'container');
     this.addBox(18, 0, -84, 2.5, 2.5, 6, this.matContainer, true, 'container');
@@ -413,6 +445,7 @@ export class GreyboxMap {
 
     // 천장 조명판(발광, 비충돌)과 실내 조명 세 개
     const panelMat = new MeshStandardMaterial({ color: 0x20262e, emissive: 0xdff2ff, emissiveIntensity: 1.8 });
+    this.panelMat = panelMat;
     const panels: [number, number][] = [
       [-16, -129], [-5.5, -129], [5.5, -129], [16, -129], [-16.5, -145], [16.5, -145], [0, -140.75], [0, -149.25], [-12, -161], [0, -157.5], [12, -161],
     ];
@@ -427,6 +460,7 @@ export class GreyboxMap {
       const l = new PointLight(color, intensity, dist, 2);
       l.position.set(x, y, z);
       this.interiorLights.push(l);
+      this.lightBase.push({ color: l.color.clone(), intensity });
     }
     this.target = this.group;
     this.doorPlug = new Mesh(new BoxGeometry(6, H, 0.05), new MeshBasicMaterial({ color: 0x0b1622 }));
@@ -498,6 +532,67 @@ export class GreyboxMap {
     } else {
       if (ci < 0) this.colliders.push(this.gateBox);
       if (mi < 0) this.meshes.push(this.gateMesh);
+    }
+  }
+
+  /** 관제동 정문 여닫기. 충돌·탄 판정은 바로 바뀌고 문짝은 tick에서 1.2초에 걸쳐 밀린다. 바꾼 뒤에는 길찾기 격자를 다시 만든다(Game.setDoor) */
+  setDoor(open: boolean): void {
+    if (open === this.doorOpen) return;
+    this.doorOpen = open;
+    this.doorBoxes.forEach((box, i) => {
+      const leaf = this.doorLeaves[i];
+      const ci = this.colliders.indexOf(box);
+      const mi = this.meshes.indexOf(leaf);
+      if (open) {
+        if (ci >= 0) this.colliders.splice(ci, 1);
+        if (mi >= 0) this.meshes.splice(mi, 1);
+      } else {
+        if (ci < 0) this.colliders.push(box);
+        if (mi < 0) this.meshes.push(leaf);
+      }
+    });
+    if (!open) {
+      // 닫을 때(임무 다시 시작)는 바로 닫는다
+      this.doorSlide = 0;
+      this.doorLeaves.forEach((leaf, i) => leaf.position.setX((i ? 1 : -1) * 1.5));
+    }
+  }
+
+  /** 경보 켜고 끄기(관제동 조명) */
+  setAlarm(on: boolean): void {
+    if (on === this.alarm) return;
+    this.alarm = on;
+    if (on) return;
+    if (this.panelMat) {
+      this.panelMat.emissive.setHex(0xdff2ff);
+      this.panelMat.emissiveIntensity = 1.8;
+    }
+    this.interiorLights.forEach((l, i) => {
+      l.color.copy(this.lightBase[i].color);
+      l.intensity = this.lightBase[i].intensity;
+    });
+  }
+
+  /** 매 스텝: 정문이 열리는 움직임과 경보 조명의 깜박임 */
+  tick(dt: number, time: number): void {
+    if (this.doorOpen && this.doorSlide < 1) {
+      this.doorSlide = Math.min(1, this.doorSlide + dt / 1.2);
+      const e = this.doorSlide * this.doorSlide * (3 - 2 * this.doorSlide);
+      // 문짝은 벽(두께 1m) 속으로 3m 밀려 들어가 보이지 않게 된다
+      this.doorLeaves.forEach((leaf, i) => leaf.position.setX((i ? 1 : -1) * (1.5 + e * 3.02)));
+    }
+    if (this.alarm) {
+      // 1.6초 주기. 완전히 어두워지지는 않는다(싸움이 보여야 한다)
+      const k = 0.5 + 0.5 * Math.sin(time * 3.9);
+      if (this.panelMat) {
+        this.panelMat.emissive.setHex(0xff5a40);
+        this.panelMat.emissiveIntensity = 0.7 + 1.3 * k;
+      }
+      this.interiorLights.forEach((l, i) => {
+        const b = this.lightBase[i];
+        l.color.copy(b.color).lerp(ALARM_COLOR, 0.72);
+        l.intensity = b.intensity * (0.6 + 0.5 * k);
+      });
     }
   }
 

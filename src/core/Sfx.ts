@@ -220,6 +220,18 @@ export class Sfx {
 
   // ---------- 흐름 ----------
 
+  alarm(): void {
+    this.synth?.alarm();
+  }
+
+  door(): void {
+    this.synth?.door();
+  }
+
+  radio(): void {
+    this.synth?.radio();
+  }
+
   waveStart(): void {
     this.synth?.waveStart();
     this.layer('wave_start');

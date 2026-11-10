@@ -30,9 +30,9 @@ export class Hud {
   private readonly commBox = $('comm');
   private readonly commWho = $('comm-who');
   private readonly commSay = $('comm-say');
-  private commQueue: [string, string][] = [];
-  private commBusy = false;
-  private commTimer = 0;
+  private readonly chapterBox = $('chapter');
+  private readonly chapterTitle = $('chapter-t');
+  private readonly chapterSub = $('chapter-s');
   private readonly botlabels = $('botlabels');
   private readonly lockmarks = $('lockmarks');
   private readonly skills = [$('skill-0'), $('skill-1')];
@@ -158,31 +158,30 @@ export class Hud {
   }
 
   /**
-   * 무전 자막: 화자와 한 줄. 여러 줄이 들어오면 차례로 보여 준다(한 줄에 글자 수에 따라 3.2~6초).
-   * 임무의 이야기와 다음에 할 일을 여기로 전한다(킬 피드는 작고 금방 지나간다).
+   * 무전 자막: 화자와 한 줄. who가 null이면 지운다. 언제 무엇을 띄울지는 임무(Mission)가 시뮬레이션 시간으로 정한다
+   * (일시정지하면 대사도 멈추고, 대사가 끝난 뒤에 다음 단계로 넘어가는 연출을 할 수 있다).
    */
-  comm(who: string, text: string): void {
-    this.commQueue.push([who, text]);
-    if (!this.commBusy) this.commNext();
-  }
-
-  private commNext(): void {
-    const line = this.commQueue.shift();
-    if (!line) {
-      this.commBusy = false;
+  setComm(who: string | null, text = ''): void {
+    if (who === null) {
       this.commBox.classList.add('hidden');
       return;
     }
-    this.commBusy = true;
-    this.commWho.textContent = line[0];
-    this.commSay.textContent = line[1];
+    this.commWho.textContent = who;
+    this.commSay.textContent = text;
     this.commBox.classList.remove('hidden');
     // 같은 글자가 다시 떠도 들어오는 효과가 다시 돌게 한다
     this.commBox.classList.remove('in');
     void this.commBox.offsetWidth;
     this.commBox.classList.add('in');
-    clearTimeout(this.commTimer);
-    this.commTimer = window.setTimeout(() => this.commNext(), Math.max(3200, Math.min(6000, 1400 + line[1].length * 85)));
+  }
+
+  /** 막 제목: 화면 위쪽에 4.5초 동안 떴다 사라진다 */
+  chapter(title: string, sub: string): void {
+    this.chapterTitle.textContent = title;
+    this.chapterSub.textContent = sub;
+    this.chapterBox.classList.remove('show');
+    void this.chapterBox.offsetWidth;
+    this.chapterBox.classList.add('show');
   }
 
   /** 크로스헤어 벌어짐 (px) */
@@ -311,10 +310,8 @@ export class Hud {
   }
 
   resetFeeds(): void {
-    this.commQueue = [];
-    this.commBusy = false;
-    clearTimeout(this.commTimer);
     this.commBox.classList.add('hidden');
+    this.chapterBox.classList.remove('show');
     this.killfeed.replaceChildren();
     this.dmgnums.replaceChildren();
     this.dmgdir.replaceChildren();

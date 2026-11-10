@@ -338,6 +338,21 @@ if not generated('kit_barrier', 'prop_barrier.glb', (6, 0.6, 1.1), tex=1024):
     barrier()
 # 임무 단말(중계기·신호기·전송 단말): 충돌 상자가 없어 비율을 그대로 둔다. 기준 높이 2m, 게임이 높이에 맞춰 줄인다
 generated('kit_console', 'prop_console.glb', (0.9, 0.9, 2.0), uniform=True)
+# 탈출선 '제비'(임무 끝에 착륙장으로 내려온다): 비율 그대로, 높이 SHIP_H에 맞춘다. 원점 = 선체 바닥 가운데
+SHIP_H = 4.2
+ship = generated('kit_ship', 'prop_ship.glb', (10, 10, SHIP_H), tex=1024, uniform=True)
+if ship:
+    # 꼬리날개가 가장 높다 -> 높은 점들이 모인 쪽이 꼬리. 기수를 -Y(게임의 +Z)로 돌린다
+    sm = ship.data
+    tall = [v.co for v in sm.vertices if v.co.z > SHIP_H * 0.85]
+    tx = sum(c.x for c in tall) / len(tall)
+    ty = sum(c.y for c in tall) / len(tall)
+    turn = round((math.pi / 2 - math.atan2(ty, tx)) / (math.pi / 2)) * (math.pi / 2)
+    sm.transform(Matrix.Rotation(turn, 4, 'Z'))
+    sm.update()
+    xs = [v.co.x for v in sm.vertices]
+    ys = [v.co.y for v in sm.vertices]
+    print('SHIP', 'TAIL', round(tx, 2), round(ty, 2), 'TURN', round(math.degrees(turn)), 'SPAN', round(max(xs) - min(xs), 2), 'LENGTH', round(max(ys) - min(ys), 2))
 deck()
 pillar()
 rail()
@@ -357,6 +372,11 @@ for o in MODULES:
     if o.name in lineup:
         o.location = lineup[o.name]
 L.render(os.path.join(PREVIEW, 'kit_lineup.png'), loc=(-4, -26, 12), look_at=(1.5, 2, 1.5), fov_deg=30)
+for o in MODULES:
+    o.hide_render = o.name != 'kit_ship'
+    o.location = (0, 0, 0)
+L.render(os.path.join(PREVIEW, 'kit_ship.png'), loc=(13, -17, 9), look_at=(0, 0, 1.8), fov_deg=30)
+L.render(os.path.join(PREVIEW, 'kit_ship_under.png'), loc=(4, -14, -3), look_at=(0, 0, 2), fov_deg=30)
 for o in MODULES:
     o.hide_render = o.name != 'kit_deck'
     o.location = (0, 0, 0)
