@@ -90,6 +90,7 @@ def finish(name):
     except Exception:  # noqa: BLE001
         pass
     ob.vertex_groups.clear()
+    L.box_uv(ob, 2.5)
     L.PARTS.clear()
     MODULES.append(ob)
     print('MODULE %-18s tris %5d  mats %d' % (name, sum(len(p.vertices) - 2 for p in me.polygons), len(slots)))

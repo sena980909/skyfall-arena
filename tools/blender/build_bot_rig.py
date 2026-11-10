@@ -147,6 +147,7 @@ REST['armsgun'] = ARMS_PIVOT
 REST['muzzle'] = D_GUN @ R.MUZZLE
 PARENT = {'torso': 'hips', 'head': 'torso', 'armsgun': 'torso', 'muzzle': 'armsgun'}
 mesh_ob = L.join_parts('BotMesh')
+L.box_uv(mesh_ob, 0.45)
 print('TRIS', sum(len(p.vertices) - 2 for p in mesh_ob.data.polygons), 'VERTS', len(mesh_ob.data.vertices), 'MATS', len(mesh_ob.data.materials))
 
 arm_data = bpy.data.armatures.new('BotRig')

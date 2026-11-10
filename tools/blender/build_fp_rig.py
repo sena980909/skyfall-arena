@@ -283,6 +283,7 @@ REST['gun'] = D_REST @ Vector((0, 0, 0))
 REST['mag'] = D_REST @ R.MAG_CENTER
 REST['muzzle'] = D_REST @ R.MUZZLE
 mesh_ob = L.join_parts('FPRigMesh')
+L.box_uv(mesh_ob, 0.22)
 tris = sum(len(p.vertices) - 2 for p in mesh_ob.data.polygons)
 print('TRIS', tris, 'VERTS', len(mesh_ob.data.vertices), 'MATS', len(mesh_ob.data.materials))
 

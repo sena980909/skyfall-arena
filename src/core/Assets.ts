@@ -1,5 +1,6 @@
 import {
-  AnimationClip, EquirectangularReflectionMapping, Group, RepeatWrapping, SRGBColorSpace, Texture, TextureLoader,
+  AnimationClip, EquirectangularReflectionMapping, Group, Mesh, MeshStandardMaterial, MirroredRepeatWrapping,
+  Object3D, RepeatWrapping, SRGBColorSpace, Texture, TextureLoader,
 } from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
@@ -33,6 +34,7 @@ export interface LoadedAssets {
   botRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 만든 맵 모듈 키트(컨테이너·크레이트·플랫폼·외벽 등). 있으면 그레이박스 외형을 대체한다 */
   mapKit: Group | null;
+  detail: DetailTextures;
   vfx: VfxTextures;
 }
 
@@ -69,6 +71,42 @@ function stripRootMotion(clip: AnimationClip): void {
     v[i * 3] -= dx * k;
     v[i * 3 + 2] -= dz * k;
   }
+}
+
+/** 디테일 텍스처(힉스필드 생성 → tools/tex-prep.mjs로 회색조·밝기 보정): 색 위에 곱해 입힌다 */
+export interface DetailTextures {
+  panel: Texture | null;
+  suit: Texture | null;
+  worn: Texture | null;
+}
+
+/**
+ * 재질 이름으로 디테일 텍스처를 입힌다. 모델은 Blender에서 상자 투영 UV(1칸 = 고정 길이)를 넣어 두었고,
+ * 텍스처는 거울 반복이라 이음새가 없다. map은 재질 색·정점 색에 곱해지고, 같은 텍스처를 bumpMap으로도 써서 패널 선에 음영이 생긴다.
+ */
+export function applyDetailTextures(root: Object3D, d: DetailTextures): void {
+  const pick = (name: string): [Texture | null, number] => {
+    if (/glow|visor/.test(name)) return [null, 0];
+    if (name === 'kit_paint') return [d.worn, 0.5];
+    if (/suit|glove/.test(name)) return [d.suit, 0.25];
+    return [d.panel, 0.6];
+  };
+  const seen = new Set<unknown>();
+  root.traverse((o) => {
+    const m = o as Mesh;
+    if (!m.isMesh) return;
+    for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+      if (seen.has(mat)) continue;
+      seen.add(mat);
+      const sm = mat as MeshStandardMaterial;
+      const [tex, bump] = pick(sm.name);
+      if (!tex) continue;
+      sm.map = tex;
+      sm.bumpMap = tex;
+      sm.bumpScale = bump;
+      sm.needsUpdate = true;
+    }
+  });
 }
 
 async function exists(url: string): Promise<boolean> {
@@ -177,5 +215,19 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
   const mapKit = mapKitGltf ? mapKitGltf.scene : null;
-  return { sky, floor, container, raven, rifle, fpArms, fpRig, botRig, mapKit, vfx: { muzzle, bolt, impact, flashBurst } };
+  const [dPanel, dSuit, dWorn] = await Promise.all([
+    loadTexture(tl, BASE + 'textures/detail_panel.jpg'),
+    loadTexture(tl, BASE + 'textures/detail_suit.jpg'),
+    loadTexture(tl, BASE + 'textures/detail_worn.jpg'),
+  ]);
+  for (const t of [dPanel, dSuit, dWorn]) {
+    if (!t) continue;
+    t.wrapS = t.wrapT = MirroredRepeatWrapping;
+    t.repeat.set(1, 1);
+    t.anisotropy = 4;
+    t.needsUpdate = true;
+  }
+  const detail: DetailTextures = { panel: dPanel, suit: dSuit, worn: dWorn };
+  for (const root of [fpRigGltf?.scene, botRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
+  return { sky, floor, container, raven, rifle, fpArms, fpRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }

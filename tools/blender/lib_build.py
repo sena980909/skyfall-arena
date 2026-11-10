@@ -119,6 +119,28 @@ def sphere(name, center, radius, mat, group, xform=None, scale=(1, 1, 1)):
     return _finish(bm, name, mat, group, 0.0, 2, xform, smooth_angle=80.0)
 
 
+def box_uv(ob, meters_per_tile=1.0):
+    """상자 투영 UV: 면 법선의 주축에 수직인 평면으로 투영한다. UV 1칸 = meters_per_tile 미터.
+    게임에서 타일형 디테일 텍스처를 색 위에 곱해 입히는 데 쓴다(텍스처는 거울 반복이라 이음새가 없다)."""
+    me = ob.data
+    uv = me.uv_layers.new(name='UVMap')
+    k = 1.0 / meters_per_tile
+    verts = me.vertices
+    loops = me.loops
+    for poly in me.polygons:
+        n = poly.normal
+        ax = max(range(3), key=lambda i: abs(n[i]))
+        for li in poly.loop_indices:
+            co = verts[loops[li].vertex_index].co
+            if ax == 0:
+                uv.data[li].uv = (co.y * k, co.z * k)
+            elif ax == 1:
+                uv.data[li].uv = (co.x * k, co.z * k)
+            else:
+                uv.data[li].uv = (co.x * k, co.y * k)
+    return uv
+
+
 def join_parts(name):
     """PARTS를 하나의 메시 오브젝트로 합친다(정점 그룹·머티리얼 슬롯 유지)."""
     obs = list(PARTS)
