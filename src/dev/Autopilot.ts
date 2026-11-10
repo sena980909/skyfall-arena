@@ -49,6 +49,8 @@ export class Autopilot implements PlayerInput {
   private nextRepath = 0;
   private readonly lastPos = new Vector3();
   private stuckTimer = 0;
+  private readonly stuckAnchor = new Vector3();
+  private lastStuckAt = -Infinity;
   private stuckCount = 0;
   private detourUntil = 0;
   private detourGoal: Vector3 | null = null;
@@ -282,8 +284,13 @@ export class Autopilot implements PlayerInput {
     const wp = this.path[this.pathIdx];
     const flat = this.tmp.copy(wp).sub(p.position).setY(0);
     if (flat.length() < 0.7) {
-      this.pathIdx++;
-      return;
+      // 모서리를 다 돌기 전에 다음 지점으로 넘어가면 방벽 끝에 걸려 제자리에서 민다(경로를 다시 잡아도 같은 자리라 풀리지 않는다).
+      // 다음 지점까지 곧게 갈 수 있을 때만, 아니면 이 지점에 거의 닿았을 때만 넘어간다
+      const next = this.path[this.pathIdx + 1];
+      if (!next || flat.length() < 0.25 || ctx.nav.clearLine(p.position, next)) {
+        this.pathIdx++;
+        return;
+      }
     }
     // 웨이포인트를 바라보며 전진 (피치는 수평으로)
     const eye = this.tmp2.copy(p.position).setY(p.position.y + 1.6);
@@ -319,11 +326,18 @@ export class Autopilot implements PlayerInput {
   private stuckCheck(dt: number): void {
     const p = this.ctx.player;
     const wantsMove = this.keys.has('KeyW') || this.keys.has('KeyA') || this.keys.has('KeyD') || this.keys.has('KeyS');
-    const moved = p.position.distanceTo(this.lastPos);
     this.lastPos.copy(p.position);
-    if (wantsMove && moved < 0.01) {
+    // 한 스텝의 이동량이 아니라 0.8초 동안 제자리(30cm 안)인지로 본다: 방벽 모서리에 밀려 조금씩 떨리면
+    // 스텝마다는 움직인 것으로 보여서, 예전 방식으로는 끼인 줄 모르고 계속 밀기만 했다
+    const off = p.position.distanceTo(this.stuckAnchor);
+    if (!wantsMove || off > 0.3) {
+      this.stuckAnchor.copy(p.position);
+      this.stuckTimer = 0;
+    } else {
       this.stuckTimer += dt;
       if (this.stuckTimer > 0.8) {
+        if (this.ctx.now - this.lastStuckAt > 6) this.stuckCount = 0;
+        this.lastStuckAt = this.ctx.now;
         this.stuckCount++;
         this.press('Space');
         this.strafeDir *= -1;
@@ -339,6 +353,6 @@ export class Autopilot implements PlayerInput {
           this.log(`끼임 반복 → 우회 (pos ${p.position.x.toFixed(1)}, ${p.position.y.toFixed(1)}, ${p.position.z.toFixed(1)})`);
         } else this.log('끼임 → 점프/방향 전환');
       }
-    } else { this.stuckTimer = 0; if (moved > 0.5) this.stuckCount = 0; }
+    }
   }
 }

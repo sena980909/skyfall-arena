@@ -157,6 +157,11 @@ export class NavGrid {
   }
 
   /** 두 셀 사이 직선 통과 가능 여부 (샘플링 + 높이 연속성) */
+  /** 두 지점 사이를 곧게 걸어갈 수 있는가(막힌 칸·넘지 못할 단차가 없다) */
+  clearLine(from: Vector3, to: Vector3): boolean {
+    return this.losCells(this.toCell(from), this.toCell(to));
+  }
+
   private losCells(a: [number, number], b: [number, number]): boolean {
     const dx = b[0] - a[0];
     const dz = b[1] - a[1];
