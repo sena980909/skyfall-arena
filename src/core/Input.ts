@@ -15,6 +15,8 @@ export class Input {
   private static readonly CLAMP_PX = 160;
   /** Pointer Lock 요청이 실패했을 때 (지원 안 함 등) */
   onLockFailed?: () => void;
+  /** 터치 조작 모드: 포인터 잠금이 없으므로 '잠금'을 플레이 중 여부로만 쓴다 */
+  touchMode = false;
 
   constructor(private readonly el: HTMLElement) {
     window.addEventListener('keydown', (e) => {
@@ -66,8 +68,44 @@ export class Input {
     });
   }
 
+  /** 터치 버튼이 누르는 가상 키 */
+  setVirtualKey(code: string, down: boolean): void {
+    if (down) {
+      if (!this.keys.has(code)) this.pressed.add(code);
+      this.keys.add(code);
+    } else this.keys.delete(code);
+  }
+
+  /** 터치 버튼이 누르는 가상 마우스 버튼 */
+  setVirtualButton(button: number, down: boolean): void {
+    this.mouseDown[button] = down;
+    if (down) this.mousePressed[button] = true;
+  }
+
+  /** 터치 끌기로 들어온 시점 이동 */
+  addLook(dx: number, dy: number): void {
+    this.mouseDX += dx;
+    this.mouseDY += dy;
+  }
+
+  /** 터치 모드에서 일시정지로 나갈 때 */
+  releaseTouch(): void {
+    if (!this.touchMode || !this.locked) return;
+    this.locked = false;
+    this.keys.clear();
+    this.mouseDown.fill(false);
+    this.onLockChange?.(false);
+  }
+
   requestLock(): void {
     if (this.locked) return;
+    if (this.touchMode) {
+      this.locked = true;
+      this.mouseDX = 0;
+      this.mouseDY = 0;
+      this.onLockChange?.(true);
+      return;
+    }
     try {
       // 일부 임베디드 브라우저는 Pointer Lock을 지원하지 않는다 (Promise reject 또는 throw)
       const r = (this.el.requestPointerLock as () => Promise<void> | void).call(this.el);

@@ -303,7 +303,9 @@ export class Bot implements Hittable, Healable {
     }
     this.group.add(model);
     const torso = model.getObjectByName('torso');
-    if (torso) this.spineBones = [torso];
+    const hips = model.getObjectByName('hips');
+    // Split the waist twist between pelvis and chest so strafing does not snap the body 90 degrees at one joint.
+    if (torso) this.spineBones = hips ? [hips, torso] : [torso];
     this.aimBone = model.getObjectByName('armsgun') ?? null;
     this.rifleMuzzle = model.getObjectByName('muzzle') ?? null;
     this.rigV2 = true;

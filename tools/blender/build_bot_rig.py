@@ -226,12 +226,17 @@ if USE_DETAIL:
     import bot_detail as BD  # noqa: E402
     if MODE == 'player':
         PART = {'upper.L': 'UL', 'upper.R': 'UR', 'fore.L': 'LL', 'hand.L': 'LL', 'fore.R': 'RG', 'hand.R': 'RG', 'gun': 'RG'}
-        JOINED = {frozenset(p) for p in (('BODY', 'UL'), ('BODY', 'UR'), ('UL', 'LL'), ('UR', 'RG'))}
+        # Arms are cut free from the body as well: the left arm lies across the chest and is fused to it in the generated
+        # mesh, so any shared surface stretches into a sheet when the arm moves. The pauldrons (body) cover the shoulder gap.
+        JOINED = {frozenset(p) for p in (('UL', 'LL'), ('UR', 'RG'))}
         mesh_ob = BD.swap_in(mesh_ob, DETAIL, part_of=lambda b: PART.get(b, 'BODY'), joined=JOINED)
         BD.recolor_blue(mesh_ob)
     elif MODE == 'fp':
         # 팔·총만 따로 만든 상세 메시(파란색으로 생성)를 절차 팔·총에 정렬한다. 본은 쓰지 않는다(한 덩어리)
-        mesh_ob = BD.swap_in(mesh_ob, DETAIL, tex_size=2048, aux_tex_size=1024, visor_material=None, align_mode='object')
+        # Drop the upper arms: with the gun raised to aim height the shoulder ends poke into the screen corners.
+        # The cut sits at the elbows, which stay below the view.
+        mesh_ob = BD.swap_in(mesh_ob, DETAIL, tex_size=2048, aux_tex_size=1024, visor_material=None, align_mode='object',
+                             part_of=lambda b: 'DROP' if b in ('upper.L', 'upper.R') else 'KEEP', joined=set(), keep_parts={'KEEP'})
         mesh_ob.vertex_groups.clear()
         mesh_ob.data.transform(Matrix.Translation(-EYE))
         mesh_ob.name = 'FPDetail'
@@ -446,9 +451,9 @@ AWAY_L = A.hand_frame(POUCH + Vector((0.0, 0.03, 0.04)), (0.15, 0.25, -0.95), (-
 
 
 def reload_gun(c):
-    """기울임 c(0..1)일 때의 총 행렬. 회전량은 1인칭과 같고(요 0.3·피치 0.5·롤 0.75), 이동은 몸 앞 공간에 맞춰 줄였다."""
-    return (Matrix.Translation(GUN_POS + Vector((-0.08, -0.03, 0.10)) * c) @ Matrix.Rotation(0.3 * c, 4, 'Z')
-            @ Matrix.Rotation(0.5 * c, 4, 'X') @ Matrix.Rotation(0.75 * c, 4, 'Y'))
+    """기울임 c(0..1)일 때의 총 행렬. 3인칭에서는 총을 가슴 앞에 둔 채 살짝 숙이고 옆으로 눕힌다(1인칭처럼 들어 올리면 얼굴을 가린다)."""
+    return (Matrix.Translation(GUN_POS + Vector((-0.03, -0.03, -0.03)) * c) @ Matrix.Rotation(0.18 * c, 4, 'Z')
+            @ Matrix.Rotation(-0.12 * c, 4, 'X') @ Matrix.Rotation(0.5 * c, 4, 'Y'))
 
 
 def pose_reload(t):

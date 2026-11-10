@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>SKYFALL ARENA</title>
   <style>
     :root {
@@ -94,6 +94,27 @@
     @keyframes dmgnum { 0% { opacity: 1; margin-top: 0; } 100% { opacity: 0; margin-top: -40px; } }
 
     .lockmark { position: absolute; width: 30px; height: 30px; border: 2px solid rgba(255, 190, 90, .75); transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 8px rgba(255, 160, 60, .6); pointer-events: none; }
+    /* ---------- 모바일(터치) 배치: 가로 화면, 아래쪽은 손가락이 쓰므로 정보는 위와 가운데로 ---------- */
+    body.touch { touch-action: none; overscroll-behavior: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    body.touch .hud-top { top: 6px; }
+    body.touch .hud-top .wave { font-size: 15px; letter-spacing: 1px; }
+    body.touch .hud-top .bots, body.touch .hud-top .rest { font-size: 11px; margin-top: 0; }
+    body.touch .bossbar { width: 240px; margin-top: 4px; }
+    body.touch .hud-tl { top: 6px; left: 8px; width: 210px; transform: scale(.8); transform-origin: top left; }
+    body.touch .hud-tr { top: 6px; right: 10px; }
+    body.touch .hud-tr .score { font-size: 16px; }
+    body.touch .hud-bl { left: 50%; bottom: 12px; transform: translateX(-50%) scale(.62); transform-origin: bottom center; }
+    body.touch .hud-bc { left: 50%; bottom: 62px; transform: translateX(-50%) scale(.7); transform-origin: bottom center; }
+    body.touch .hud-br { right: 10px; top: 46px; bottom: auto; transform: scale(.62); transform-origin: top right; }
+    body.touch .overlay h1 { font-size: 34px; letter-spacing: 4px; }
+    body.touch .overlay h2 { font-size: 24px; }
+    body.touch .overlay .sub { margin-bottom: 12px; }
+    body.touch .overlay .row { margin-bottom: 10px; }
+    body.touch .keys.desktop { display: none; }
+    .keys.mobile { display: none; }
+    body.touch .keys.mobile { display: block; }
+    #rotate-hint { display: none; position: fixed; inset: 0; z-index: 30; background: #0b0f16; color: #fff; align-items: center; justify-content: center; text-align: center; font-size: 18px; font-weight: 700; letter-spacing: 1px; }
+    @media (orientation: portrait) { body.touch #rotate-hint { display: flex; } }
     #objmark { position: absolute; transform: translate(-50%, -50%); text-align: center; pointer-events: none; color: #7ff0ff; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-shadow: 0 1px 6px rgba(0,0,0,.8); white-space: nowrap; }
     #objmark.hidden, #interact.hidden { display: none; }
     #objmark .diamond { width: 16px; height: 16px; margin: 0 auto 6px; border: 2px solid #7ff0ff; transform: rotate(45deg); box-shadow: 0 0 10px rgba(90, 230, 255, .8); background: rgba(90, 230, 255, .18); }
@@ -200,11 +221,17 @@
       <button class="btn" data-d="hard">HARD</button>
     </div>
     <button class="btn primary" id="btn-start">클릭하여 시작</button>
-    <div class="keys">
+    <div class="keys desktop">
       <b>WASD</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프 · <b>좌클릭</b> 사격 · <b>R</b> 재장전 · <b>F</b> 상호작용<br/>
       <b>우클릭</b> 펄스 로켓 · <b>E</b> 치유 필드 · <b>Q</b> 전술 조준 · <b>V</b> 3인칭 · <b>F3</b> 봇 디버그 · <b>F7</b> 후처리 · <b>F8</b> 오토파일럿 · <b>Esc</b> 일시정지
     </div>
+    <div class="keys mobile">
+      화면 왼쪽을 끌어 <b>이동</b> (끝까지 밀면 달리기) · 오른쪽을 끌어 <b>시점</b><br/>
+      오른쪽 아래 버튼으로 <b>사격</b>·<b>점프</b>·<b>로켓</b>·<b>장전</b>·<b>치유</b>·<b>궁</b>·<b>F</b>(상호작용)
+    </div>
   </div>
+
+  <div id="rotate-hint">기기를 가로로 돌려 주세요</div>
 
   <div id="ov-pause" class="overlay hidden">
     <h2>PAUSED</h2>

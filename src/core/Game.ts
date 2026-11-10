@@ -3,6 +3,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { Input } from './Input';
+import { isTouchDevice, TouchControls } from './TouchControls';
 import { ASSET_BASE, loadAssets, type LoadedAssets } from './Assets';
 import { Autopilot, AUTOPILOT_PROFILES, type AutopilotProfile } from '@/dev/Autopilot';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -49,6 +50,8 @@ export class Game {
   private difficultyId: DifficultyId = 'normal';
   /** 게임 모드: 임무(목표 수행 후 탈출) 또는 아레나(웨이브 섬멸) */
   mode: 'mission' | 'arena' = 'mission';
+  /** 터치 조작(모바일). 터치 기기가 아니면 null */
+  private touch: TouchControls | null = null;
   readonly mission: Mission;
   private simTime = 0;
   private accumulator = 0;
@@ -76,7 +79,9 @@ export class Game {
 
   constructor(container: HTMLElement) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const mobile = isTouchDevice();
+    // 모바일은 화면 픽셀이 촘촘해 그대로 그리면 너무 무겁다 → 배율을 낮춘다
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.5 : 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
@@ -100,7 +105,7 @@ export class Game {
     const sun = new DirectionalLight(0xffe0b0, 2.7);
     sun.position.set(42, 40, 16);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
     sun.shadow.camera.left = -52;
     sun.shadow.camera.right = 52;
     sun.shadow.camera.top = 46;
@@ -160,6 +165,17 @@ export class Game {
       onVictory: () => this.endGame(true),
       onDefeat: (reason) => this.endGame(false, reason),
     });
+
+    if (mobile) {
+      document.body.classList.add('touch');
+      this.input.touchMode = true;
+      this.touch = new TouchControls(this.input, () => this.input.releaseTouch(), () => {
+        this.player.setThirdPerson(!this.player.thirdPerson);
+      });
+      // 후처리는 모바일 그래픽 칩에 부담이 커서 기본으로 끈다
+      if (this.post) this.post.enabled = false;
+      this.perfChecked = true;
+    }
 
     this.bindUi();
     const modeBtns = document.querySelectorAll<HTMLButtonElement>('#mode .btn');
@@ -223,7 +239,14 @@ export class Game {
         this.difficultyId = (b.dataset.d as DifficultyId) ?? 'normal';
       }),
     );
-    document.getElementById('btn-start')?.addEventListener('click', () => this.startGame());
+    document.getElementById('btn-start')?.addEventListener('click', () => {
+      if (this.touch) {
+        // 모바일: 전체 화면·가로 고정을 시도한다(지원하지 않는 브라우저에서는 그냥 넘어간다)
+        const el = document.documentElement as HTMLElement & { requestFullscreen?: () => Promise<void> };
+        void el.requestFullscreen?.().then(() => (screen.orientation as unknown as { lock?: (o: string) => Promise<void> }).lock?.('landscape')).catch(() => undefined);
+      }
+      this.startGame();
+    });
     document.getElementById('btn-restart')?.addEventListener('click', () => this.startGame());
     document.getElementById('btn-resume')?.addEventListener('click', () => this.input.requestLock());
     // 오버레이 자체 클릭으로도 재개
@@ -400,6 +423,7 @@ export class Game {
       this.input.consumeMouse();
     }
 
+    this.touch?.setActive(this.state === 'playing');
     this.fx.camPos.copy(this.camera.position);
     this.fx.update(dt);
     if (this.post) {

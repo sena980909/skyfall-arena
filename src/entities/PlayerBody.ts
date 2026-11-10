@@ -1,5 +1,5 @@
 import {
-  AnimationAction, AnimationClip, AnimationMixer, Group, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
+  AnimationAction, AnimationClip, AnimationMixer, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
@@ -45,6 +45,7 @@ export class PlayerBody {
   private reloadAction: AnimationAction | null = null;
   private reloadBlend = 0;
   private readonly torso: Object3D | null;
+  private readonly hips: Object3D | null;
   private readonly arms: Object3D | null;
   private readonly muzzle: Object3D | null;
   private readonly clean: Quaternion[] = [];
@@ -74,6 +75,8 @@ export class PlayerBody {
         if (!mm) {
           mm = (orig as MeshStandardMaterial).clone();
           mm.envMapIntensity = 0.4;
+          // The mesh is cut where the arms separate from the body; draw inner faces too so the cuts do not read as holes.
+          mm.side = DoubleSide;
           if (mm.name === 'bot_visor') {
             mm.emissive.setHex(0x7fe0ff);
             mm.emissiveIntensity = 0.9;
@@ -89,9 +92,10 @@ export class PlayerBody {
     this.group.add(model);
     this.group.rotation.order = 'YXZ';
     this.torso = model.getObjectByName('torso') ?? null;
+    this.hips = model.getObjectByName('hips') ?? null;
     this.arms = model.getObjectByName('armsgun') ?? null;
     this.muzzle = model.getObjectByName('muzzle') ?? null;
-    for (const b of [this.torso, this.arms]) {
+    for (const b of [this.hips, this.torso, this.arms]) {
       if (!b) continue;
       this.poseBones.push(b);
       this.clean.push(b.quaternion.clone());
@@ -202,7 +206,15 @@ export class PlayerBody {
     for (let i = 0; i < this.poseBones.length; i++) this.clean[i].copy(this.poseBones[i].quaternion);
 
     this.group.updateMatrixWorld(true);
-    if (this.torso && Math.abs(twist) > 1e-3) this.rotateWorld(this.torso, this.q.setFromAxisAngle(UP, twist));
+    if (this.torso && Math.abs(twist) > 1e-3) {
+      // Split the twist between pelvis and chest so strafing does not snap the body at one joint.
+      const part = this.hips ? twist / 2 : twist;
+      if (this.hips) {
+        this.rotateWorld(this.hips, this.q.setFromAxisAngle(UP, part));
+        this.group.updateMatrixWorld(true);
+      }
+      this.rotateWorld(this.torso, this.q.setFromAxisAngle(UP, part));
+    }
     if (this.arms) {
       this.group.updateMatrixWorld(true);
       // 재장전 중에는 총을 수평 가까이 둔다
@@ -220,7 +232,13 @@ export class PlayerBody {
     const ease = k * k;
     const bounce = k >= 1 ? Math.max(0, Math.sin(Math.min(1, (this.deathT - 0.6) / 0.25) * Math.PI)) * 0.05 : 0;
     this.group.rotation.x = -(Math.PI / 2 - 0.08) * ease + bounce;
-    this.mixer.update(0);
+    // Let the arms and rifle drop toward the legs instead of staying locked in the aiming pose (they would point at the sky).
+    for (let i = 0; i < this.poseBones.length; i++) this.poseBones[i].quaternion.copy(this.clean[i]);
+    if (this.arms) {
+      this.group.updateMatrixWorld(true);
+      this.axis.set(-Math.cos(this.legsYaw), 0, Math.sin(this.legsYaw));
+      this.rotateWorld(this.arms, this.q.setFromAxisAngle(this.axis, -1.25 * ease));
+    }
   }
 
   /** 월드 회전 q를 본에 적용: L' = Wp⁻¹ · q · Wp · L */
