@@ -242,17 +242,27 @@ export class SynthSfx {
     this.noise(this.bus, t + 0.01, 0.07, 0.15, { bp: [2400, 1200, 2] });
   }
 
-  /** 재장전: 탄창 분리(두 번 클릭) → 삽입 클릭 → 장전 손잡이 '척-척' (1.3초) */
-  reload(): void {
+  /** 재장전 1단계: 탄창 멈치 클릭 두 번 → 탄창이 빠지는 슬라이드 */
+  reloadOut(vol = 1): void {
     const t = this.ctx.currentTime;
-    this.click(this.bus, t, 0.5, 2200);
-    this.click(this.bus, t + 0.06, 0.3, 1600);
-    this.noise(this.bus, t + 0.12, 0.25, 0.12, { bp: [500, 1400, 1.5], attack: 0.03, curve: 'lin' }); // 슬라이드
-    this.click(this.bus, t + 0.62, 0.55, 1900, 0.016); // 탄창 삽입
-    this.tone(this.bus, t + 0.62, 'sine', 180, 120, 0.08, 0.3);
-    this.click(this.bus, t + 0.98, 0.5, 3200, 0.01); // 장전 손잡이
-    this.click(this.bus, t + 1.1, 0.6, 2700, 0.014);
-    this.tone(this.bus, t + 1.1, 'square', 420, 760, 0.18, 0.06, { lp: [1800, 600], attack: 0.02 }); // 에너지 셀 충전 힌트
+    this.click(this.bus, t, 0.5 * vol, 2200);
+    this.click(this.bus, t + 0.05, 0.3 * vol, 1600);
+    this.noise(this.bus, t + 0.06, 0.24, 0.12 * vol, { bp: [500, 1400, 1.5], attack: 0.03, curve: 'lin' });
+  }
+
+  /** 재장전 2단계: 새 탄창이 끝까지 들어가 걸리는 소리 */
+  reloadIn(vol = 1): void {
+    const t = this.ctx.currentTime;
+    this.click(this.bus, t, 0.55 * vol, 1900, 0.016);
+    this.tone(this.bus, t, 'sine', 180, 120, 0.08, 0.3 * vol);
+  }
+
+  /** 재장전 3단계: 왼손이 총열 덮개로 돌아오며 '척', 에너지 셀 충전 힌트 */
+  reloadReady(): void {
+    const t = this.ctx.currentTime;
+    this.click(this.bus, t, 0.45, 3200, 0.01);
+    this.click(this.bus, t + 0.09, 0.55, 2700, 0.014);
+    this.tone(this.bus, t + 0.09, 'square', 420, 760, 0.18, 0.06, { lp: [1800, 600], attack: 0.02 });
   }
 
   empty(): void {

@@ -3,23 +3,35 @@ import type { Camera, Vector3 } from 'three';
 /**
  * 생성된 효과음 파일(WebAudio 버퍼) 재생기.
  * - manifest(assets/sfx/manifest.json)에 있는 클립만 로드, 없으면 Sfx가 합성음으로 폴백
+ * - manifest 값은 파일명, { file, from, to }(초 단위 구간만 잘라 씀), 또는 그 배열(재생할 때마다 무작위 변주)
  * - 3D 위치 재생: PannerNode(HRTF 대신 equalpower, 거리 감쇠)
  */
 export type SfxName =
   | 'shoot' | 'shoot_far' | 'hit' | 'headshot' | 'kill' | 'hurt' | 'reload' | 'empty' | 'jump' | 'dash' | 'throw'
-  | 'flashbang' | 'ult_activate' | 'ult_ready' | 'heal' | 'wave_start' | 'wave_clear' | 'death' | 'footstep' | 'bot_death';
+  | 'flashbang' | 'ult_activate' | 'ult_ready' | 'heal' | 'wave_start' | 'wave_clear' | 'death' | 'footstep' | 'bot_death'
+  | 'land' | 'reload_out' | 'reload_in';
+
+/** manifest 항목: 파일 전체, 또는 [from, to] 구간(생성 클립은 앞뒤 무음과 여러 소리가 섞여 있어 필요한 소리만 자른다) */
+type ClipSpec = string | { file: string; from?: number; to?: number };
+
+interface Clip {
+  buf: AudioBuffer;
+  /** 정규화 게인 (RMS 기준) × 클립별 기준 음량 */
+  gain: number;
+}
 
 /** 클립별 기준 음량 (정규화 후 곱해지는 배율). 1 = 기준 */
 const CLIP_LEVEL: Partial<Record<SfxName, number>> = {
   shoot: 0.7, shoot_far: 0.45, hit: 0.45, headshot: 0.6, kill: 0.6, hurt: 0.6, reload: 0.5, empty: 0.4, jump: 0.35,
   dash: 0.7, throw: 0.45, flashbang: 0.9, ult_activate: 0.9, ult_ready: 0.6, heal: 0.55, wave_start: 0.7, wave_clear: 0.7,
-  death: 0.8, footstep: 0.3, bot_death: 0.6,
+  death: 0.8, footstep: 0.3, bot_death: 0.6, land: 0.45, reload_out: 0.4, reload_in: 0.5,
 };
 
 export class AudioBank {
-  private buffers = new Map<SfxName, AudioBuffer>();
-  /** 정규화 게인 (RMS 기준) */
-  private gains = new Map<SfxName, number>();
+  /** 이름별 클립. 여러 개면 변주로 쓴다 */
+  private clips = new Map<SfxName, Clip[]>();
+  /** 직전에 재생한 변주 번호 (같은 소리 연속 재생 방지) */
+  private lastVariant = new Map<SfxName, number>();
   private readonly bus: GainNode;
   private listenerCam: Camera | null = null;
   /** 같은 클립 과다 중첩 방지 */
@@ -55,10 +67,12 @@ export class AudioBank {
   report(masterGain: number): Record<string, { rmsDb: number; peakDb: number }> {
     const out: Record<string, { rmsDb: number; peakDb: number }> = {};
     const db = (v: number): number => Math.round(20 * Math.log10(Math.max(1e-6, v)) * 10) / 10;
-    for (const [name, buf] of this.buffers) {
-      const st = AudioBank.stats(buf);
-      const g = (this.gains.get(name) ?? 1) * masterGain;
-      out[name] = { rmsDb: db(st.rms * g), peakDb: db(st.peak * g) };
+    for (const [name, list] of this.clips) {
+      list.forEach((c, i) => {
+        const st = AudioBank.stats(c.buf);
+        const g = c.gain * masterGain;
+        out[list.length > 1 ? `${name}#${i + 1}` : name] = { rmsDb: db(st.rms * g), peakDb: db(st.peak * g) };
+      });
     }
     return out;
   }
@@ -88,7 +102,49 @@ export class AudioBank {
   }
 
   has(name: SfxName): boolean {
-    return this.buffers.has(name);
+    return this.clips.has(name);
+  }
+
+  /** 클립 길이(초). 변주가 여러 개면 각각 */
+  durations(name: SfxName): number[] {
+    return (this.clips.get(name) ?? []).map((c) => c.buf.duration);
+  }
+
+  /**
+   * [from, to] 구간만 잘라 새 버퍼로 만든다. 구간 안에서 첫 소리가 나는 지점까지 앞쪽 무음도 걷어내
+   * 재생 시점과 소리가 어긋나지 않게 하고(디코더마다 mp3 앞 여백이 조금씩 다르다), 잘린 꼬리는 30ms 동안 줄인다.
+   */
+  private cut(buf: AudioBuffer, from = 0, to = buf.duration): AudioBuffer {
+    const sr = buf.sampleRate;
+    let a = Math.max(0, Math.floor(from * sr));
+    const b = Math.min(buf.length, Math.ceil(to * sr));
+    const d = buf.getChannelData(0);
+    let peak = 0;
+    for (let i = a; i < b; i++) peak = Math.max(peak, Math.abs(d[i]));
+    let on = a;
+    while (on < b && Math.abs(d[on]) < peak * 0.1) on++;
+    a = Math.max(a, on - Math.floor(sr * 0.003));
+    const n = Math.max(1, b - a);
+    const out = this.ctx.createBuffer(buf.numberOfChannels, n, sr);
+    const fade = Math.min(n, Math.floor(sr * 0.03));
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const o = out.getChannelData(c);
+      o.set(buf.getChannelData(c).subarray(a, b));
+      for (let i = 0; i < fade; i++) o[n - 1 - i] *= i / fade;
+    }
+    return out;
+  }
+
+  /** 재생할 클립 고르기: 변주가 여러 개면 직전과 다른 것을 무작위로 */
+  private pick(name: SfxName): Clip | null {
+    const list = this.clips.get(name);
+    if (!list || list.length === 0) return null;
+    if (list.length === 1) return list[0];
+    const last = this.lastVariant.get(name) ?? -1;
+    let i = Math.floor(Math.random() * (list.length - 1));
+    if (i >= last && last >= 0) i++;
+    this.lastVariant.set(name, i);
+    return list[i];
   }
 
   setListener(cam: Camera): void {
@@ -96,50 +152,62 @@ export class AudioBank {
   }
 
   async load(baseUrl: string): Promise<number> {
-    let manifest: Partial<Record<SfxName, string>>;
+    let manifest: Partial<Record<SfxName, ClipSpec | ClipSpec[]>>;
     try {
       const r = await fetch(`${baseUrl}sfx/manifest.json`);
       if (!r.ok || (r.headers.get('content-type') ?? '').includes('text/html')) return 0;
-      manifest = (await r.json()) as Partial<Record<SfxName, string>>;
+      manifest = (await r.json()) as Partial<Record<SfxName, ClipSpec | ClipSpec[]>>;
     } catch {
       return 0;
     }
-    const entries = Object.entries(manifest) as [SfxName, string][];
+    const entries: [SfxName, ClipSpec, number][] = [];
+    for (const [name, v] of Object.entries(manifest) as [SfxName, ClipSpec | ClipSpec[]][]) {
+      (Array.isArray(v) ? v : [v]).forEach((spec, i) => entries.push([name, spec, i]));
+    }
+    const loaded = new Map<SfxName, (Clip | undefined)[]>();
     await Promise.all(
-      entries.map(async ([name, file]) => {
+      entries.map(async ([name, spec, order]) => {
         try {
+          const file = typeof spec === 'string' ? spec : spec.file;
           const res = await fetch(`${baseUrl}sfx/${file}`);
           if (!res.ok) return;
-          const buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
+          let buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
+          if (typeof spec !== 'string') buf = this.cut(buf, spec.from, spec.to);
           AudioBank.fadeEdges(buf);
           const stats = AudioBank.stats(buf);
-          if (stats.rms < 0.02 || stats.peak < 0.12) {
+          // 구간을 지정해 잘라 쓰는 클립은 짧은 타격음이라 평균(RMS)이 낮게 나오므로 피크만 본다
+          if (stats.peak < 0.12 || (typeof spec === 'string' && stats.rms < 0.02)) {
             // 사실상 무음인 생성 클립은 제외 → 합성음 폴백 (안 들리는 효과음 방지)
             console.warn(`[AudioBank] '${name}' 너무 조용해서 제외 (rms ${stats.rms.toFixed(3)}, peak ${stats.peak.toFixed(2)})`);
             return;
           }
-          this.buffers.set(name, buf);
-          this.gains.set(name, AudioBank.normalizeGain(buf) * (CLIP_LEVEL[name] ?? 0.6));
+          const list = loaded.get(name) ?? [];
+          list[order] = { buf, gain: AudioBank.normalizeGain(buf) * (CLIP_LEVEL[name] ?? 0.6) };
+          loaded.set(name, list);
         } catch (e) {
           console.warn('[AudioBank] decode failed', name, e);
         }
       }),
     );
-    return this.buffers.size;
+    for (const [name, list] of loaded) {
+      const ok = list.filter((c): c is Clip => !!c);
+      if (ok.length) this.clips.set(name, ok);
+    }
+    return this.clips.size;
   }
 
   /** 2D 재생 (UI/플레이어 자신). rate로 피치 변주 */
   play(name: SfxName, volume = 1, rate = 1, minInterval = 0.02): boolean {
-    const buf = this.buffers.get(name);
-    if (!buf) return false;
+    const clip = this.pick(name);
+    if (!clip) return false;
     const t = this.ctx.currentTime;
     if (t - (this.lastPlay.get(name) ?? -1) < minInterval) return true;
     this.lastPlay.set(name, t);
     const src = this.ctx.createBufferSource();
-    src.buffer = buf;
+    src.buffer = clip.buf;
     src.playbackRate.value = rate;
     const g = this.ctx.createGain();
-    g.gain.value = volume * (this.gains.get(name) ?? 1);
+    g.gain.value = volume * clip.gain;
     src.connect(g).connect(this.bus);
     src.start();
     return true;
@@ -147,13 +215,14 @@ export class AudioBank {
 
   /** 3D 위치 재생 (봇 총성/발소리). 리스너 = 카메라 */
   playAt(name: SfxName, pos: Vector3, volume = 1, rate = 1, refDistance = 6, maxDistance = 60): boolean {
-    const buf = this.buffers.get(name);
-    if (!buf) return false;
+    if (!this.clips.has(name)) return false;
     const cam = this.listenerCam;
     if (!cam) return this.play(name, volume, rate);
     this.updateListener(cam);
+    const clip = this.pick(name);
+    if (!clip) return false;
     const src = this.ctx.createBufferSource();
-    src.buffer = buf;
+    src.buffer = clip.buf;
     src.playbackRate.value = rate;
     const panner = this.ctx.createPanner();
     panner.panningModel = 'equalpower';
@@ -165,7 +234,7 @@ export class AudioBank {
     panner.positionY.value = pos.y;
     panner.positionZ.value = pos.z;
     const g = this.ctx.createGain();
-    g.gain.value = volume * (this.gains.get(name) ?? 1);
+    g.gain.value = volume * clip.gain;
     src.connect(panner).connect(g).connect(this.bus);
     src.start();
     return true;

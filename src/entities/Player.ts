@@ -50,6 +50,13 @@ interface LockTarget {
 }
 
 /** 1인칭 플레이어 (레이븐) — 펄스 라이플 / Shift 달리기 / 우클릭 펄스 로켓 / E 치유 필드 / Q 전술 조준 */
+/**
+ * 재장전 효과음 시점(재장전 진행률 0..1). Blender reload 클립(1.4초) 기준:
+ * 탄창이 빠지기 시작(0.16초) 직전의 멈치 클릭, 새 탄창이 끝까지 들어가는 순간(0.93초), 왼손이 총열 덮개로 돌아오는 구간(1.15초).
+ * tools/blender/build_fp_rig.py의 pose('reload')와 맞춘 값이라 클립 타이밍을 바꾸면 같이 바꿔야 한다.
+ */
+const RELOAD_CUES = [0.14 / 1.4, 0.93 / 1.4, 1.15 / 1.4];
+
 export class Player implements Hittable, Healable {
   readonly hero = RAVEN;
   readonly displayName = 'YOU';
@@ -70,6 +77,8 @@ export class Player implements Hittable, Healable {
   invulnUntil = 0;
   yaw = 0;
   pitch = 0;
+  /** 다음에 낼 재장전 효과음 단계 (RELOAD_CUES 인덱스) */
+  private reloadCue = RELOAD_CUES.length;
   sensitivity = 0.0022;
   ultCharge = 0;
   stats: PlayerStats = emptyStats();
@@ -424,7 +433,7 @@ export class Player implements Hittable, Healable {
     // 착지 감지 → 총·카메라가 살짝 눌린다
     if (this.ctrl.onGround && !this.wasOnGround) {
       this.landKick = Math.min(0.09, Math.abs(this.prevVelY) * 0.006);
-      if (Math.abs(this.prevVelY) > 4) ctx.sfx.footstep(undefined, 0.4);
+      if (Math.abs(this.prevVelY) > 4) ctx.sfx.land(clamp((Math.abs(this.prevVelY) - 4) / 8, 0, 1));
     }
     this.wasOnGround = this.ctrl.onGround;
     this.landKick = Math.max(0, this.landKick - dt * 0.35);
@@ -440,8 +449,13 @@ export class Player implements Hittable, Healable {
 
     // 무기
     this.weapon.update(now, dt);
-    if (input.justPressed('KeyR') && this.weapon.startReload(now)) ctx.sfx.reload();
-    if (this.weapon.ammo === 0 && !this.weapon.reloading && this.weapon.startReload(now)) ctx.sfx.reload();
+    if (input.justPressed('KeyR') && this.weapon.startReload(now)) this.reloadCue = 0;
+    if (this.weapon.ammo === 0 && !this.weapon.reloading && this.weapon.startReload(now)) this.reloadCue = 0;
+    // 재장전 효과음: 애니메이션의 동작 시점에 맞춰 단계별로 낸다
+    if (this.weapon.reloading) {
+      const p = this.weapon.reloadProgress(now);
+      while (this.reloadCue < RELOAD_CUES.length && p >= RELOAD_CUES[this.reloadCue]) ctx.sfx.reloadStage(this.reloadCue++);
+    } else this.reloadCue = RELOAD_CUES.length;
     if (input.mouseDown[0] && !this.sprinting) {
       if (this.weapon.canFire(now)) this.fire();
       else if (input.mousePressed[0] && this.weapon.ammo === 0) ctx.sfx.empty();

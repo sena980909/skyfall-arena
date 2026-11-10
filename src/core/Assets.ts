@@ -76,9 +76,16 @@ function stripRootMotion(clip: AnimationClip): void {
 /** 디테일 텍스처(힉스필드 생성 → tools/tex-prep.mjs로 회색조·밝기 보정): 색 위에 곱해 입힌다 */
 export interface DetailTextures {
   panel: Texture | null;
+  /** 검은 재질용: 패널 선이 밝게 나오도록 뒤집은 패널 텍스처 */
+  panelDark: Texture | null;
   suit: Texture | null;
   worn: Texture | null;
 }
+
+/** 거의 검은 재질(총 몸통·총열, 봇 관절). 어두운 선을 곱해도 보이지 않아 뒤집은 텍스처를 쓴다 */
+const DARK_MATERIAL = /dark|gun_metal/;
+/** detail_panel_dark.jpg의 바탕 밝기(sRGB 약 140 = 선형 0.26)를 되돌리는 배율 */
+const DARK_GAIN = 3.8;
 
 /**
  * 재질 이름으로 디테일 텍스처를 입힌다. 모델은 Blender에서 상자 투영 UV(1칸 = 고정 길이)를 넣어 두었고,
@@ -87,9 +94,10 @@ export interface DetailTextures {
 export function applyDetailTextures(root: Object3D, d: DetailTextures): void {
   const pick = (name: string): [Texture | null, number] => {
     if (/glow|visor/.test(name)) return [null, 0];
-    if (name === 'kit_paint') return [d.worn, 0.5];
-    if (/suit|glove/.test(name)) return [d.suit, 0.25];
-    return [d.panel, 0.6];
+    if (name === 'kit_paint') return [d.worn, 0.8];
+    if (/suit|glove/.test(name)) return [d.suit, 0.4];
+    if (DARK_MATERIAL.test(name) && d.panelDark) return [d.panelDark, -0.9]; // 뒤집힌 텍스처라 범프 방향도 뒤집어 선이 홈으로 보이게
+    return [d.panel, 0.9];
   };
   const seen = new Set<unknown>();
   root.traverse((o) => {
@@ -101,6 +109,8 @@ export function applyDetailTextures(root: Object3D, d: DetailTextures): void {
       const sm = mat as MeshStandardMaterial;
       const [tex, bump] = pick(sm.name);
       if (!tex) continue;
+      // 검은 재질: 뒤집은 텍스처의 바탕이 어두운 만큼 색을 밝혀 바탕 밝기는 그대로 두고 패널 선만 밝게 띄운다
+      if (tex === d.panelDark) sm.color.multiplyScalar(DARK_GAIN);
       sm.map = tex;
       sm.bumpMap = tex;
       sm.bumpScale = bump;
@@ -215,19 +225,20 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
   const mapKit = mapKitGltf ? mapKitGltf.scene : null;
-  const [dPanel, dSuit, dWorn] = await Promise.all([
+  const [dPanel, dPanelDark, dSuit, dWorn] = await Promise.all([
     loadTexture(tl, BASE + 'textures/detail_panel.jpg'),
+    loadTexture(tl, BASE + 'textures/detail_panel_dark.jpg'),
     loadTexture(tl, BASE + 'textures/detail_suit.jpg'),
     loadTexture(tl, BASE + 'textures/detail_worn.jpg'),
   ]);
-  for (const t of [dPanel, dSuit, dWorn]) {
+  for (const t of [dPanel, dPanelDark, dSuit, dWorn]) {
     if (!t) continue;
     t.wrapS = t.wrapT = MirroredRepeatWrapping;
     t.repeat.set(1, 1);
     t.anisotropy = 4;
     t.needsUpdate = true;
   }
-  const detail: DetailTextures = { panel: dPanel, suit: dSuit, worn: dWorn };
+  const detail: DetailTextures = { panel: dPanel, panelDark: dPanelDark, suit: dSuit, worn: dWorn };
   for (const root of [fpRigGltf?.scene, botRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
   return { sky, floor, container, raven, rifle, fpArms, fpRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }
