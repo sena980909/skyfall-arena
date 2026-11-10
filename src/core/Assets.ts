@@ -31,6 +31,8 @@ export interface LoadedAssets {
   fpRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 직접 만든 적 봇 리그(이동 클립 포함). 있으면 raven·pulse_rifle 대신 쓴다 */
   botRig: { scene: Group; clips: AnimationClip[] } | null;
+  /** Blender로 만든 맵 모듈 키트(컨테이너·크레이트·플랫폼·외벽 등). 있으면 그레이박스 외형을 대체한다 */
+  mapKit: Group | null;
   vfx: VfxTextures;
 }
 
@@ -127,9 +129,10 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const [fpRigGltf, botRigGltf] = await Promise.all([
+  const [fpRigGltf, botRigGltf, mapKitGltf] = await Promise.all([
     loadGltf(gl, BASE + 'models/fp_rig.glb'),
     loadGltf(gl, BASE + 'models/bot_rig.glb'),
+    loadGltf(gl, BASE + 'models/map_kit.glb'),
   ]);
   // 이전 방식 에셋(이미지→3D 캐릭터·라이브러리 클립·라이플)은 새 봇 리그가 없을 때만 내려받는다
   const [ravenBase, rifleGltf, ...clipGltfs] = botRigGltf
@@ -173,5 +176,6 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
 
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
-  return { sky, floor, container, raven, rifle, fpArms, fpRig, botRig, vfx: { muzzle, bolt, impact, flashBurst } };
+  const mapKit = mapKitGltf ? mapKitGltf.scene : null;
+  return { sky, floor, container, raven, rifle, fpArms, fpRig, botRig, mapKit, vfx: { muzzle, bolt, impact, flashBurst } };
 }

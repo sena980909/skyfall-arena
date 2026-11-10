@@ -154,6 +154,7 @@ export class Game {
         this.scene.fog = new Fog(0xbcd6ff, 120, 260);
       }
       this.map.applyTextures(a.floor, a.container);
+      if (a.mapKit) this.map.applyKit(a.mapKit);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
       if (a.fpRig) this.player.applyFpRig(a.fpRig.scene, a.fpRig.clips);
       else if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
