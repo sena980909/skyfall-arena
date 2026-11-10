@@ -860,10 +860,13 @@ export class Player implements Hittable, Healable {
       this.stats.hits++;
       if (headshot) this.stats.headshots++;
       if (!this.ultActive) this.ultCharge = Math.min(this.hero.abilities.ult.chargeNeeded, this.ultCharge + dmg * this.hero.abilities.ult.chargePerDamage);
-      ctx.hud.hitmarkerFlash(!res.target.alive ? 'kill' : headshot ? 'hs' : 'hit');
+      ctx.hud.hitmarkerFlash(!res.target.alive ? 'kill' : headshot ? 'hs' : 'hit', headshot);
       ctx.hud.damageNumber(res.point, this.camera, dmg, headshot);
-      if (headshot) ctx.sfx.headshot();
-      else ctx.sfx.hit();
+      if (headshot) {
+        // 머리에 맞은 자리에서 붉은 불꽃이 튄다
+        ctx.fx.sparks(res.point, 0xff5038, 9);
+        ctx.sfx.headshot();
+      } else ctx.sfx.hit();
     }
   }
 

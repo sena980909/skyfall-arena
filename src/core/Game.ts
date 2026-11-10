@@ -350,6 +350,7 @@ export class Game {
     this.hud.setScore(this.score);
     this.hud.killFeed(`YOU ▶ ${bot.displayName}${headshot ? ' (헤드샷)' : ''}${bot.isBoss ? ' +500' : ''}`, headshot || bot.isBoss ? 'hs' : '');
     if (bot.isBoss) this.hud.setBoss(null);
+    if (headshot) this.hud.headshotBanner();
     if (this.mode === 'arena') this.hud.setBots(this.waves.aliveBots);
     this.sfx.kill();
   }

@@ -23,6 +23,7 @@ export class Hud {
   private readonly ult = $('hud-ult');
   private readonly crosshair = $('crosshair');
   private readonly hitmarker = $('hitmarker');
+  private readonly hsbanner = $('hsbanner');
   private readonly dmgdir = $('dmgdir');
   private readonly vignette = $('vignette');
   private readonly dmgnums = $('dmgnums');
@@ -175,12 +176,20 @@ export class Hud {
     });
   }
 
-  hitmarkerFlash(kind: 'hit' | 'hs' | 'kill'): void {
-    this.hitmarker.className = kind === 'hit' ? '' : kind;
+  /** 명중 표시. 헤드샷은 빨갛고 크게(처치와 겹치면 둘 다 붙인다) */
+  hitmarkerFlash(kind: 'hit' | 'hs' | 'kill', headshot = kind === 'hs'): void {
+    this.hitmarker.className = `${kind === 'kill' ? 'kill' : ''} ${headshot ? 'hs' : ''}`.trim();
     void this.hitmarker.offsetWidth; // 애니메이션 리스타트
     this.hitmarker.classList.add('show');
     clearTimeout(this.hmTimer);
-    this.hmTimer = window.setTimeout(() => this.hitmarker.classList.remove('show'), 200);
+    this.hmTimer = window.setTimeout(() => this.hitmarker.classList.remove('show'), headshot ? 320 : 200);
+  }
+
+  /** 헤드샷으로 처치했을 때 조준점 아래에 잠깐 뜨는 문구 */
+  headshotBanner(): void {
+    this.hsbanner.classList.remove('show');
+    void this.hsbanner.offsetWidth;
+    this.hsbanner.classList.add('show');
   }
 
   /** 피격 방향 호 표시. angleRad: 화면 위(전방) 기준 시계방향 */

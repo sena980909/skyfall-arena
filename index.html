@@ -78,10 +78,16 @@
     #crosshair .l.e, #crosshair .l.w { height: 2px; width: 9px; top: -1px; }
     #hitmarker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; opacity: 0; }
     #hitmarker .l { position: absolute; width: 2px; height: 10px; background: #fff; box-shadow: 0 0 3px #000; }
-    #hitmarker.hs .l { background: #ffd166; }
     #hitmarker.kill .l { background: var(--orange); }
+    /* 헤드샷: 빨갛고 굵은 표시가 크게 튀어나왔다 줄어든다(처치와 겹치면 헤드샷 쪽이 이긴다) */
+    #hitmarker.hs .l { background: #ff3030; width: 3px; height: 13px; box-shadow: 0 0 7px #ff2a2a, 0 0 2px #000; }
     #hitmarker.show { animation: hm .18s ease-out forwards; }
+    #hitmarker.hs.show { animation: hmhs .3s ease-out forwards; }
     @keyframes hm { 0% { opacity: 1; transform: scale(1.3); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes hmhs { 0% { opacity: 1; transform: scale(2.1); } 35% { opacity: 1; transform: scale(1.4); } 100% { opacity: 0; transform: scale(1.25); } }
+    #hsbanner { position: absolute; left: 50%; top: calc(50% + 46px); transform: translateX(-50%); font-weight: 900; font-size: 20px; letter-spacing: 3px; color: #ff4a3a; text-shadow: 0 0 8px #7a0000, 0 2px 2px #000; opacity: 0; pointer-events: none; }
+    #hsbanner.show { animation: hsb .9s ease-out forwards; }
+    @keyframes hsb { 0% { opacity: 0; transform: translateX(-50%) scale(1.6); } 12% { opacity: 1; transform: translateX(-50%) scale(1); } 70% { opacity: 1; } 100% { opacity: 0; transform: translateX(-50%) scale(1); } }
 
     /* damage indicators */
     #dmgdir { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
@@ -90,8 +96,9 @@
     #vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(255,0,0,0) 55%, rgba(255,0,0,.55) 100%); opacity: 0; transition: opacity .15s; }
 
     .dmgnum { position: absolute; font-weight: 800; font-size: 18px; color: #fff; text-shadow: 0 0 4px #000, 0 2px 2px #000; transform: translate(-50%, -50%); animation: dmgnum .7s ease-out forwards; }
-    .dmgnum.hs { color: #ffd166; font-size: 22px; }
+    .dmgnum.hs { color: #ff4a3a; font-size: 30px; text-shadow: 0 0 6px #7a0000, 0 2px 2px #000; animation: dmgnumhs .85s ease-out forwards; }
     @keyframes dmgnum { 0% { opacity: 1; margin-top: 0; } 100% { opacity: 0; margin-top: -40px; } }
+    @keyframes dmgnumhs { 0% { opacity: 1; margin-top: 0; transform: translate(-50%, -50%) scale(1.6); } 16% { transform: translate(-50%, -50%) scale(1); } 100% { opacity: 0; margin-top: -56px; transform: translate(-50%, -50%) scale(1); } }
 
     .lockmark { position: absolute; width: 30px; height: 30px; border: 2px solid rgba(255, 190, 90, .75); transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 8px rgba(255, 160, 60, .6); pointer-events: none; }
     /* ---------- 모바일(터치) 배치: 가로 화면, 아래쪽은 손가락이 쓰므로 정보는 위와 가운데로 ---------- */
@@ -199,6 +206,7 @@
       <div class="l" style="transform: translate(-9px,4px) rotate(-45deg)"></div>
       <div class="l" style="transform: translate(7px,4px) rotate(45deg)"></div>
     </div>
+    <div id="hsbanner">HEADSHOT</div>
     <div id="dmgdir"></div>
     <div id="vignette"></div>
     <div id="flashwhite"></div>
@@ -223,6 +231,7 @@
     <button class="btn primary" id="btn-start">클릭하여 시작</button>
     <div class="keys desktop">
       <b>WASD</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프 · <b>좌클릭</b> 사격 · <b>R</b> 재장전 · <b>F</b> 상호작용<br/>
+      <b>머리</b>를 맞히면 피해 2배(빨간 표시)<br/>
       <b>우클릭</b> 펄스 로켓 · <b>E</b> 치유 필드 · <b>Q</b> 전술 조준 · <b>V</b> 3인칭 · <b>F3</b> 봇 디버그 · <b>F7</b> 후처리 · <b>F8</b> 오토파일럿 · <b>Esc</b> 일시정지
     </div>
     <div class="keys mobile">
