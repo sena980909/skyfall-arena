@@ -3,6 +3,9 @@ import {
   Object3D, RepeatWrapping, SRGBColorSpace, Texture, TextureLoader,
 } from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import type { FpDirectParts } from '@/render/FpDirect';
+import { buildKit, KIT_FILES } from '@/world/KitDirect';
 
 export interface CharacterAsset {
   /** 리깅된 원본 씬 (복제해서 사용) */
@@ -37,6 +40,8 @@ export interface LoadedAssets {
   fpRig: { scene: Group; clips: AnimationClip[] } | null;
   /** 힉스필드 상세 모델(파란색)의 팔·총만 잘라낸 1인칭 모델. 눈이 원점. 있으면 fpRig 대신 쓴다 */
   fpDetail: { scene: Group; clips: AnimationClip[] } | null;
+  /** 힉스필드에서 받은 그대로의 1인칭 모델(총, 탄창, 팔). 셋 다 있으면 fpDetail 대신 쓴다(render/FpDirect.ts) */
+  fpDirect: FpDirectParts | null;
   /** 주인공 3인칭 몸: 적 봇과 같은 리그에 팔 관절·재장전 클립이 더해진 파란색 상세 모델 */
   playerRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 직접 만든 적 봇 리그(이동 클립 포함). 있으면 raven·pulse_rifle 대신 쓴다 */
@@ -179,6 +184,8 @@ async function loadGltf(loader: GLTFLoader, url: string): Promise<GLTF | null> {
 export async function loadAssets(onProgress?: (msg: string) => void): Promise<LoadedAssets> {
   const tl = new TextureLoader();
   const gl = new GLTFLoader();
+  // 생성 모델은 정점 자료를 meshopt로 압축해 싣는다(tools/pack-generated.mjs)
+  gl.setMeshoptDecoder(MeshoptDecoder);
   onProgress?.('텍스처 로딩');
   const [sky, floor, container, floorN, deck, deckN] = await Promise.all([
     loadTexture(tl, BASE + 'textures/sky_panorama.jpg'),
@@ -198,14 +205,17 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const [fpDetailGltf, playerRigGltf, botRigGltf, mapKitGltf] = await Promise.all([
-    loadGltf(gl, BASE + 'models/fp_detail.glb'),
+  const fpParts = await Promise.all(['fp_gun', 'fp_mag', 'fp_arm'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
+  const fpDirect = fpParts[0] && fpParts[1] && fpParts[2] ? { gun: fpParts[0].scene, mag: fpParts[1].scene, arm: fpParts[2].scene } : null;
+  const [fpDetailGltf, playerRigGltf, botRigGltf, ...kitGltfs] = await Promise.all([
+    fpDirect ? Promise.resolve(null) : loadGltf(gl, BASE + 'models/fp_detail.glb'),
     loadGltf(gl, BASE + 'models/player_rig.glb'),
     loadGltf(gl, BASE + 'models/bot_rig.glb'),
-    loadGltf(gl, BASE + 'models/map_kit.glb'),
+    // 맵 소품: 힉스필드에서 받은 모델을 하나씩 그대로 불러 모듈 묶음을 만든다(world/KitDirect.ts)
+    ...KIT_FILES.map((n) => loadGltf(gl, BASE + `models/kit/${n}.glb`)),
   ]);
   // 직접 만든 1인칭 리그는 상세 1인칭 모델이 없을 때만 내려받는다
-  const fpRigGltf = fpDetailGltf ? null : await loadGltf(gl, BASE + 'models/fp_rig.glb');
+  const fpRigGltf = fpDetailGltf || fpDirect ? null : await loadGltf(gl, BASE + 'models/fp_rig.glb');
   // 이전 방식 에셋(이미지→3D 캐릭터·라이브러리 클립·라이플)은 새 봇 리그가 없을 때만 내려받는다
   const [ravenBase, rifleGltf, ...clipGltfs] = botRigGltf
     ? [null, null]
@@ -243,14 +253,15 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const rifle = rifleGltf ? rifleGltf.scene : null;
   rifle?.traverse((o) => (o.castShadow = true));
   // 이전 방식(이미지→3D 덩어리 메시)은 새 리그가 없을 때만 내려받는다
-  const fpArmsGltf = fpRigGltf || fpDetailGltf ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
+  const fpArmsGltf = fpRigGltf || fpDetailGltf || fpDirect ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
   const fpArms = fpArmsGltf ? fpArmsGltf.scene : null;
 
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
   const fpDetail = fpDetailGltf ? { scene: fpDetailGltf.scene, clips: fpDetailGltf.animations } : null;
   const playerRig = playerRigGltf ? { scene: playerRigGltf.scene, clips: playerRigGltf.animations } : null;
-  const mapKit = mapKitGltf ? mapKitGltf.scene : null;
+  const kitModels = Object.fromEntries(KIT_FILES.map((n, i) => [n, kitGltfs[i]?.scene ?? null]));
+  const mapKit = kitGltfs.some((k) => k) ? buildKit(kitModels) : null;
   const [dPanel, dPanelDark, dSuit, dWorn] = await Promise.all([
     loadTexture(tl, BASE + 'textures/detail_panel.jpg'),
     loadTexture(tl, BASE + 'textures/detail_panel_dark.jpg'),
@@ -266,5 +277,5 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   }
   const detail: DetailTextures = { panel: dPanel, panelDark: dPanelDark, suit: dSuit, worn: dWorn };
   for (const root of [fpRigGltf?.scene, botRigGltf?.scene, playerRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
-  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
+  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, fpDirect, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }

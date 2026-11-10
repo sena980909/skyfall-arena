@@ -10,6 +10,7 @@ import { SPAWN_INVULN_SECONDS } from '@/data/rules';
 import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type Hittable } from '@/combat/Hitscan';
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';
+import { FpDirect, type FpDirectParts } from '@/render/FpDirect';
 import { buildAlignedGun } from '@/render/GunAlign';
 import { addArmSleeves } from '@/render/ArmSleeves';
 import { angleBetweenDeg, clamp, DEG2RAD, jitterDirection } from '@/core/MathUtil';
@@ -149,6 +150,8 @@ export class Player implements Hittable, Healable {
   private fpRigActive = false;
   /** 상세 1인칭 모델(팔·총 한 덩어리) 사용 중 */
   private fpDetailActive = false;
+  /** 힉스필드 모델을 그대로 붙인 1인칭 총(있으면 재장전 움직임도 이쪽이 맡는다) */
+  private fpDirect: FpDirect | null = null;
   private fpCant = 0;
   private fpDown = 0;
   private fpSeat = 0;
@@ -315,6 +318,30 @@ export class Player implements Hittable, Healable {
     }
     if (this.fpIdle) this.fpIdle.setEffectiveWeight(1 - this.fpReloadBlend);
     this.fpMixer.update(dt);
+  }
+
+  /**
+   * 힉스필드에서 받은 총·탄창·팔 모델을 그대로 붙인다(Blender를 거치지 않는다). 자리와 재장전 움직임은 FpDirect가 정한다.
+   * 뷰모델 전체의 흔들림·반동·달리기 자세는 animateViewmodel이 그대로 맡는다.
+   */
+  applyFpDirect(parts: FpDirectParts): void {
+    if (this.rifleHolder) this.rifleHolder.visible = false;
+    for (const c of [...this.viewmodel.children]) if (c !== this.muzzle) c.visible = false;
+    this.vmBase.set(0, 0, 0);
+    this.viewmodel.position.set(0, 0, 0);
+    this.viewmodel.rotation.set(0, 0, 0);
+    this.fpDirect = new FpDirect(parts, Player.VIEWMODEL_LAYER);
+    this.viewmodel.add(this.fpDirect.root);
+    this.muzzle.parent?.remove(this.muzzle);
+    this.fpDirect.muzzle.add(this.muzzle);
+    this.muzzle.position.set(0, 0, 0);
+    this.fpDetailActive = true;
+    this.fpRigActive = false;
+    this.fpMixer = null;
+    this.fpReload = null;
+    this.fpIdle = null;
+    if (import.meta.env.DEV) (window as unknown as { __fp: FpDirect }).__fp = this.fpDirect;
+    console.info('[Gun] 힉스필드 모델 직접 적용');
   }
 
   /**
@@ -739,7 +766,7 @@ export class Player implements Hittable, Healable {
     let tCant = 0;
     let tDown = 0;
     let tSeat = 0;
-    if (this.fpDetailActive && !this.fpReload && this.weapon.reloading) {
+    if (this.fpDetailActive && !this.fpReload && !this.fpDirect && this.weapon.reloading) {
       const rt = this.weapon.reloadProgress(now) * this.weapon.def.reloadTime;
       const sm = (a0: number, a1: number): number => {
         const k = clamp((rt - a0) / (a1 - a0), 0, 1);
@@ -758,6 +785,7 @@ export class Player implements Hittable, Healable {
     const dDown = this.fpDown;
     const dSeat = this.fpSeat;
     this.updateFpRig(dt, now);
+    this.fpDirect?.update(dt, this.weapon.reloading ? this.weapon.reloadProgress(now) : -1);
 
     // 재장전: 총구를 살짝 내리고 몸쪽으로 당기며 안쪽으로 굴린다 (위로 들면 카메라 앞 전완 절단면이 화면에 올라온다)
     vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03 + reloadDip * 0.04 - dCant * 0.03;

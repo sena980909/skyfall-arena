@@ -654,28 +654,40 @@ export class GreyboxMap {
       return inst;
     };
     let containers = 0;
+    const hasSteps = !!kit.getObjectByName('kit_steps');
     for (const t of this.kitTags) {
       const parent = t.mesh.parent === this.blockGroup ? this.blockGroup : this.group;
       if (t.kind === 'hide') {
-        t.mesh.visible = false;
+        // 계단의 둘째 단부터: 계단 모델이 있을 때만 감춘다
+        if (hasSteps) t.mesh.visible = false;
         continue;
       }
-      if (t.kind === 'stairs') {
-        // 일반 계단: 모듈의 원점은 위쪽 가장자리, +X가 내려가는 방향. 기준 크기 6.3(길이) x 4(높이) x 4(폭)
-        const inst = place('kit_stairs', true, parent);
-        if (!inst) continue;
-        inst.position.set(t.cx, t.y0, t.cz);
-        inst.rotation.y = t.yaw ?? 0;
-        inst.scale.set(t.sx / 6.3, t.sy / 4, t.sz / 4);
-        t.mesh.visible = false;
-        continue;
-      }
-      if (t.kind === 'stairs_e' || t.kind === 'stairs_w') {
-        const inst = place('kit_stairs');
-        if (!inst) continue;
-        const east = t.kind === 'stairs_e';
-        inst.position.set(east ? 6 : -6, 0, t.cz);
-        inst.rotation.y = east ? 0 : Math.PI;
+      if (t.kind === 'stairs' || t.kind === 'stairs_e' || t.kind === 'stairs_w') {
+        if (!hasSteps) continue;
+        // 계단: 세 단짜리 토막(디딜 2.1m, 높이 1.35m, 폭 4m. 원점 = 맨 위 가장자리, +X로 내려간다)을
+        // 높이만큼 이어 놓는다. 단 하나하나가 충돌 상자의 단과 같은 자리에 온다. 떠 있는 토막 아래는 받침 상자로 채운다
+        const side = t.kind === 'stairs' ? null : t.kind === 'stairs_e' ? 1 : -1;
+        const run = new Group();
+        run.position.set(side ? side * 6 : t.cx, side ? 0 : t.y0, t.cz);
+        run.rotation.y = side ? (side > 0 ? 0 : Math.PI) : (t.yaw ?? 0);
+        const height = side ? 4.05 : t.sy;
+        const width = side ? 4 : t.sz;
+        const pieces = Math.max(1, Math.round(height / 1.35));
+        for (let k = 0; k < pieces; k++) {
+          const inst = place('kit_steps', true, run);
+          if (!inst) break;
+          const base = (pieces - 1 - k) * 1.35;
+          inst.position.set(k * 2.1, base, 0);
+          inst.scale.set(1, height / (pieces * 1.35), width / 4);
+          if (base > 0) {
+            const plinth = new Mesh(new BoxGeometry(2.1, base, width), this.matPlatform);
+            plinth.position.set(k * 2.1 + 1.05, base / 2, 0);
+            plinth.castShadow = true;
+            plinth.receiveShadow = true;
+            run.add(plinth);
+          }
+        }
+        parent.add(run);
         t.mesh.visible = false;
         continue;
       }
