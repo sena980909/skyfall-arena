@@ -30,6 +30,10 @@ export interface LoadedAssets {
   fpArms: Group | null;
   /** Blender로 직접 만든 1인칭 팔+라이플 리그(스킨 메시 + idle/reload 클립). 있으면 fpArms 대신 쓴다 */
   fpRig: { scene: Group; clips: AnimationClip[] } | null;
+  /** 힉스필드 상세 모델(파란색)의 팔·총만 잘라낸 1인칭 모델. 눈이 원점. 있으면 fpRig 대신 쓴다 */
+  fpDetail: Group | null;
+  /** 주인공 3인칭 몸: 적 봇과 같은 리그에 팔 관절·재장전 클립이 더해진 파란색 상세 모델 */
+  playerRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 직접 만든 적 봇 리그(이동 클립 포함). 있으면 raven·pulse_rifle 대신 쓴다 */
   botRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 만든 맵 모듈 키트(컨테이너·크레이트·플랫폼·외벽 등). 있으면 그레이박스 외형을 대체한다 */
@@ -179,11 +183,14 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const [fpRigGltf, botRigGltf, mapKitGltf] = await Promise.all([
-    loadGltf(gl, BASE + 'models/fp_rig.glb'),
+  const [fpDetailGltf, playerRigGltf, botRigGltf, mapKitGltf] = await Promise.all([
+    loadGltf(gl, BASE + 'models/fp_detail.glb'),
+    loadGltf(gl, BASE + 'models/player_rig.glb'),
     loadGltf(gl, BASE + 'models/bot_rig.glb'),
     loadGltf(gl, BASE + 'models/map_kit.glb'),
   ]);
+  // 직접 만든 1인칭 리그는 상세 1인칭 모델이 없을 때만 내려받는다
+  const fpRigGltf = fpDetailGltf ? null : await loadGltf(gl, BASE + 'models/fp_rig.glb');
   // 이전 방식 에셋(이미지→3D 캐릭터·라이브러리 클립·라이플)은 새 봇 리그가 없을 때만 내려받는다
   const [ravenBase, rifleGltf, ...clipGltfs] = botRigGltf
     ? [null, null]
@@ -221,11 +228,13 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const rifle = rifleGltf ? rifleGltf.scene : null;
   rifle?.traverse((o) => (o.castShadow = true));
   // 이전 방식(이미지→3D 덩어리 메시)은 새 리그가 없을 때만 내려받는다
-  const fpArmsGltf = fpRigGltf ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
+  const fpArmsGltf = fpRigGltf || fpDetailGltf ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
   const fpArms = fpArmsGltf ? fpArmsGltf.scene : null;
 
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
+  const fpDetail = fpDetailGltf ? fpDetailGltf.scene : null;
+  const playerRig = playerRigGltf ? { scene: playerRigGltf.scene, clips: playerRigGltf.animations } : null;
   const mapKit = mapKitGltf ? mapKitGltf.scene : null;
   const [dPanel, dPanelDark, dSuit, dWorn] = await Promise.all([
     loadTexture(tl, BASE + 'textures/detail_panel.jpg'),
@@ -241,6 +250,6 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
     t.needsUpdate = true;
   }
   const detail: DetailTextures = { panel: dPanel, panelDark: dPanelDark, suit: dSuit, worn: dWorn };
-  for (const root of [fpRigGltf?.scene, botRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
-  return { sky, floor, container, raven, rifle, fpArms, fpRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
+  for (const root of [fpRigGltf?.scene, botRigGltf?.scene, playerRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
+  return { sky, floor, container, raven, rifle, fpArms, fpRig, fpDetail, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }

@@ -13,6 +13,7 @@ from mathutils import Matrix, Quaternion, Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib_build as L  # noqa: E402
 import fp_rifle as R  # noqa: E402
+import reload_timeline as TL  # noqa: E402
 
 argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['.']
 PROJECT = os.path.abspath(argv[0])
@@ -235,28 +236,21 @@ CURL_L_RELAX = [0.35, 0.4, 0.3]
 CURL_L_MAG = [0.9, 0.9, 0.5]
 THUMB_L_GRIP = (0.9, 0.5, 0.3, 0.2)
 THUMB_L_RELAX = (0.4, 0.2, 0.2, 0.1)
-AWAY_L = hand_frame((-0.10, 0.34, -0.58), (0.5, 0.8, 0.25), (0.0, -0.3, -1.0))
-RELOAD_LEN = 1.4
+# 왼손이 새 탄창을 꺼내러 가는 곳: 3인칭 몸의 왼쪽 골반 앞 탄창 주머니를 카메라 공간으로 옮긴 위치.
+# (몸 공간 주머니 (-0.15, 0.10, 1.02) / 0.95배 몸의 눈 (0, 0.09, 1.60) 기준. 예전에는 배 앞 허공 (-0.10, 0.34, -0.58)이었다)
+AWAY_L = hand_frame((-0.14, 0.03, -0.60), (0.15, 0.25, -0.95), (-0.9, 0.3, 0.0))
+RELOAD_LEN = TL.RELOAD_LEN
 
 
 def pose(clip, t):
     """clip 시각 t의 모든 본 변환 X."""
     if clip == 'reload':
-        cant = ramp(t, 0.03, 0.22) * (1 - ramp(t, 1.10, 1.34))
+        cant = TL.cant(t)
         # 총구를 왼쪽 위로 들고, 윗면을 오른쪽으로 굴려 왼쪽 면과 탄창 구멍이 카메라를 향하게. 앞으로 내밀어 탄창이 화면 안에 들어오게
         D = gun_matrix(offset=(-0.13 * cant, 0.10 * cant, 0.13 * cant), pitch=0.5 * cant, yaw=0.3 * cant, roll=0.75 * cant)
         # 탄창: 빠짐 → (화면 밖에서 새 탄창) → 삽입
-        if t < 0.45:
-            k = ramp(t, 0.16, 0.42)
-            mag_off = lerp3((0, 0, 0), (0.0, -0.02, -0.42), k)
-        else:
-            k = ramp(t, 0.52, 0.86)
-            mag_off = lerp3((0.0, -0.08, -0.40), (0.0, 0.0, -0.085), k)
-            k2 = ramp(t, 0.88, 0.97)
-            mag_off = lerp3(mag_off, (0.0, 0.0, 0.0), k2)
-        wA = (1 - ramp(t, 0.10, 0.30)) + ramp(t, 1.04, 1.28)
-        wM = ramp(t, 0.50, 0.60) * (1 - ramp(t, 0.99, 1.12))
-        wAway = max(0.0, 1 - wA - wM)
+        mag_off = TL.mag_offset(t, (0.0, -0.02, -0.42), (0.0, -0.08, -0.40))
+        wA, wM, wAway = TL.hand_weights(t)
     else:
         breathe = math.sin(t / 2.0 * math.tau) if clip == 'idle' else 0.0
         D = gun_matrix(offset=(0, 0, 0.0015 * breathe), pitch=0.004 * breathe)

@@ -6,7 +6,7 @@ build_arm의 G(bone)·XF(bone)으로 파트별 정점 그룹과 추가 변환을
 """
 import math
 
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 import lib_build as L
 
@@ -137,3 +137,33 @@ def solve_arm(sfx, rest, shoulder, elbow_hint, L1, L2, fr, curls, thumb):
     Xp = Xp @ L.rot_about(rest[g('thumb3')], ax, -f3)
     X[g('thumb3')] = Xp
     return X
+
+
+def frame_matrix(fr):
+    W, f, u = fr
+    return L.basis(f.cross(u), f, u, W)
+
+
+def blend_frames(frames, weights):
+    """손 프레임 여러 개를 가중 평균(위치 선형, 회전 쿼터니언)."""
+    pos = Vector((0, 0, 0))
+    q = None
+    acc = Quaternion((0, 0, 0, 0))
+    for fr, w in zip(frames, weights):
+        if w <= 1e-6:
+            continue
+        m = frame_matrix(fr)
+        pos += m.to_translation() * w
+        qq = m.to_quaternion()
+        if q is None:
+            q = qq.copy()
+        if qq.dot(q) < 0:
+            qq.negate()
+        acc = Quaternion((acc.w + qq.w * w, acc.x + qq.x * w, acc.y + qq.y * w, acc.z + qq.z * w))
+    acc.normalize()
+    rm = acc.to_matrix()
+    return (pos, rm.col[1].copy(), rm.col[2].copy())
+
+
+def mix_curls(sets, weights):
+    return [sum(c[i] * w for c, w in zip(sets, weights)) for i in range(3)]

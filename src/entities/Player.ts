@@ -17,6 +17,8 @@ import type { PlayerInput } from '@/core/PlayerInput';
 import type { GameContext } from '@/core/Context';
 import type { Healable } from '@/world/HealthPack';
 import type { Bot } from './Bot';
+import { Raycaster } from 'three';
+import { PlayerBody } from './PlayerBody';
 
 export interface PlayerStats {
   shots: number;
@@ -50,6 +52,14 @@ interface LockTarget {
 }
 
 /** 1인칭 플레이어 (레이븐) — 펄스 라이플 / Shift 달리기 / 우클릭 펄스 로켓 / E 치유 필드 / Q 전술 조준 */
+/** 상세 1인칭 모델 배치: 가슴 높이로 든 자세를 조준 높이까지 올리고(오른쪽·위·앞), 총구를 화면 중앙 쪽으로 살짝 돌린다 */
+const FP_DETAIL_BASE = new Vector3(0.04, 0.125, -0.19);
+const FP_DETAIL_YAW = 0.1;
+/** 3인칭 카메라: 눈에서 오른쪽·위로 옮긴 축, 뒤로 물러나는 거리(m) */
+const TP_SIDE = 0.5;
+const TP_UP = 0.15;
+const TP_BACK = 2.8;
+
 /**
  * 재장전 효과음 시점(재장전 진행률 0..1). Blender reload 클립(1.4초) 기준:
  * 탄창이 빠지기 시작(0.16초) 직전의 멈치 클릭, 새 탄창이 끝까지 들어가는 순간(0.93초), 왼손이 총열 덮개로 돌아오는 구간(1.15초).
@@ -111,6 +121,17 @@ export class Player implements Hittable, Healable {
   static readonly VIEWMODEL_FOV = 56;
   private readonly eyeHeight = 1.6;
   private fpRigActive = false;
+  /** 상세 1인칭 모델(팔·총 한 덩어리) 사용 중 */
+  private fpDetailActive = false;
+  /** 3인칭 시점 (V로 전환). 몸 모델이 있어야 켤 수 있다 */
+  thirdPerson = false;
+  body: PlayerBody | null = null;
+  /** 3인칭 카메라에서 몸 깊이까지의 거리(조준 광선을 몸 앞에서 시작하는 데 쓴다) */
+  private tpDist = 0;
+  private readonly tpRay = new Raycaster();
+  private readonly tpPivot = new Vector3();
+  private readonly tpDir = new Vector3();
+  private readonly tpFrom = new Vector3();
   private fpMixer: AnimationMixer | null = null;
   private fpIdle: AnimationAction | null = null;
   private fpReload: AnimationAction | null = null;
@@ -266,6 +287,79 @@ export class Player implements Hittable, Healable {
     this.fpMixer.update(dt);
   }
 
+  /**
+   * 상세 1인칭 모델 적용. 주인공 몸(파란 상세 모델)이 총을 든 자세에서 팔·총만 남긴 것으로, 눈이 원점이다.
+   * 몸은 총을 가슴 높이로 들고 있으므로 조준 높이까지 들어 올려 화면에 놓는다. 팔·총이 한 덩어리라 본 애니메이션은 없고,
+   * 재장전은 뷰모델을 기울여 화면 아래로 내렸다 올리는 것으로 표현한다(animateViewmodel).
+   */
+  applyFpDetail(model: Group): void {
+    if (this.rifleHolder) this.rifleHolder.visible = false;
+    for (const c of [...this.viewmodel.children]) if (c !== this.muzzle) c.visible = false;
+    this.vmBase.copy(FP_DETAIL_BASE);
+    this.viewmodel.position.copy(this.vmBase);
+    this.viewmodel.rotation.set(0, 0, 0);
+    const holder = new Group();
+    holder.rotation.y = FP_DETAIL_YAW;
+    holder.add(model);
+    this.viewmodel.add(holder);
+    const mz = model.getObjectByName('muzzle');
+    if (mz) {
+      this.muzzle.parent?.remove(this.muzzle);
+      mz.add(this.muzzle);
+      this.muzzle.position.set(0, 0, 0);
+    }
+    this.fpDetailActive = true;
+    this.fpRigActive = false;
+    this.viewmodel.traverse((o) => {
+      o.layers.set(Player.VIEWMODEL_LAYER);
+      o.frustumCulled = false;
+      const m = o as Mesh;
+      if (m.isMesh) {
+        m.castShadow = false;
+        m.receiveShadow = false;
+        for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+          const sm = mat as MeshStandardMaterial;
+          // The generated roughness/metal maps are near-mirror (roughness ~0.17), which reads as wet chrome up close.
+          // Use a painted hard-surface look instead and keep only the normal map.
+          sm.metalnessMap = null;
+          sm.roughnessMap = null;
+          sm.metalness = 0.3;
+          sm.roughness = 0.55;
+          sm.envMapIntensity = 0.3;
+          sm.normalScale.set(0.8, 0.8);
+          if (sm.map) sm.map.anisotropy = 8;
+          sm.needsUpdate = true;
+        }
+      }
+    });
+    console.info('[Gun] 상세 1인칭 모델 적용');
+  }
+
+  /** 3인칭 몸 모델 생성. 돌려준 그룹을 씬에 넣어야 한다 */
+  applyBody(source: Group, clips: AnimationClip[]): Group {
+    this.body = new PlayerBody(source, clips);
+    return this.body.group;
+  }
+
+  setThirdPerson(on: boolean): void {
+    if (on && !this.body) return;
+    this.thirdPerson = on;
+    this.applyViewMode();
+    this.syncCamera();
+  }
+
+  /** 시점에 맞춰 1인칭 팔·총과 3인칭 몸 중 하나만 보이게 한다 */
+  private applyViewMode(): void {
+    this.viewmodel.visible = !this.thirdPerson && this.alive;
+    if (this.body) this.body.group.visible = this.thirdPerson;
+  }
+
+  /** 조준 광선의 출발점. 3인칭에서는 카메라와 몸 사이의 물체를 맞히지 않도록 몸 깊이에서 시작한다 */
+  private aimFrom(dir: Vector3): Vector3 {
+    if (!this.thirdPerson) return this.camera.position;
+    return this.tpFrom.copy(this.camera.position).addScaledVector(dir, this.tpDist);
+  }
+
   applyFpArmsModel(model: Group): void {
     // 모델의 Y업을 그대로 두고 총열 요만 -Z로 맞춘다(팔 때문에 롤이 생기지 않음)
     const { group: holder, muzzle, yawErrorDeg } = buildAlignedGun(model, FP_ARMS_LENGTH, true);
@@ -308,7 +402,8 @@ export class Player implements Hittable, Healable {
     this.ultUntil = 0;
     this.rocketReadyAt = Math.min(this.rocketReadyAt, now);
     this.fieldReadyAt = Math.min(this.fieldReadyAt, now);
-    this.viewmodel.visible = true;
+    this.body?.reset(this.yaw);
+    this.applyViewMode();
     this.deathT = -1;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
@@ -346,6 +441,13 @@ export class Player implements Hittable, Healable {
   updateDeathCam(dt: number): void {
     if (this.deathT < 0) return;
     this.deathT += dt;
+    if (this.thirdPerson && this.body) {
+      // 3인칭: 몸이 쓰러지는 모습을 카메라가 조금 위에서 내려다본다
+      this.body.updateDeath(dt);
+      this.pitch += (-0.35 - this.pitch) * Math.min(1, dt * 3);
+      this.syncCamera();
+      return;
+    }
     const FALL = 0.75;
     const k = Math.min(1, this.deathT / FALL);
     const ease = k * k;
@@ -369,8 +471,26 @@ export class Player implements Hittable, Healable {
     const p = this.ctrl.pos;
     // 카메라 상하 흔들림은 아주 작게 (멀미 방지), 총이 대부분의 움직임을 표현한다
     const camBob = Math.sin(this.bob * 2) * 0.012 * this.bobAmp;
-    this.camera.position.set(p.x, p.y + this.eyeHeight + this.ctrl.visualYOffset + camBob - this.landKick * 0.4, p.z);
+    const ey = p.y + this.eyeHeight + this.ctrl.visualYOffset;
     this.camera.rotation.set(this.pitch, this.yaw, 0);
+    if (!this.thirdPerson) {
+      this.camera.position.set(p.x, ey + camBob - this.landKick * 0.4, p.z);
+      return;
+    }
+    // 3인칭: 오른쪽 어깨 너머. 눈에서 오른쪽·위로 옮긴 점을 축으로 시선 반대쪽으로 물러나고, 벽에 막히면 그 앞까지만 간다
+    const cp = Math.cos(this.pitch);
+    this.tpDir.set(Math.sin(this.yaw) * cp, -Math.sin(this.pitch), Math.cos(this.yaw) * cp);
+    this.tpPivot.set(p.x + Math.cos(this.yaw) * TP_SIDE, ey + TP_UP, p.z - Math.sin(this.yaw) * TP_SIDE);
+    let dist = TP_BACK;
+    const meshes = this.ctx?.map.meshes;
+    if (meshes) {
+      this.tpRay.set(this.tpPivot, this.tpDir);
+      this.tpRay.far = TP_BACK + 0.3;
+      const hit = this.tpRay.intersectObjects(meshes, false)[0];
+      if (hit) dist = Math.max(0.5, hit.distance - 0.3);
+    }
+    this.tpDist = dist;
+    this.camera.position.copy(this.tpPivot).addScaledVector(this.tpDir, dist);
   }
 
   private syncHitboxes(): void {
@@ -412,6 +532,10 @@ export class Player implements Hittable, Healable {
     if (input.mouseDown[2]) this.tryRocket();
     if (input.justPressed('KeyE')) this.tryHealField();
     if (input.justPressed('KeyQ')) this.tryUlt();
+    if (input.justPressed('KeyV') && this.body) {
+      this.setThirdPerson(!this.thirdPerson);
+      ctx.hud.killFeed(this.thirdPerson ? '3인칭 시점' : '1인칭 시점');
+    }
 
     // 이동 — Shift 유지 = 달리기 (앞으로 이동 중, 사격 중이 아닐 때만)
     const f = (input.isDown('KeyW') ? 1 : 0) - (input.isDown('KeyS') ? 1 : 0);
@@ -473,6 +597,12 @@ export class Player implements Hittable, Healable {
       this.camera.updateProjectionMatrix();
     }
 
+    if (this.thirdPerson && this.body) {
+      this.body.update(dt, {
+        pos: this.ctrl.pos, yaw: this.yaw, pitch: this.pitch, onGround: this.ctrl.onGround,
+        reload: this.weapon.reloading ? this.weapon.reloadProgress(now) : null, kick: this.recoil,
+      });
+    }
     this.syncCamera();
     this.syncHitboxes();
     this.fxMuzzlePosition(this.tmp);
@@ -515,6 +645,7 @@ export class Player implements Hittable, Healable {
    * 화면에 보이는 총구보다 바깥(아래/오른쪽)에서 출발한다. 같은 화면 위치에 오도록 x,y를 스케일한다.
    */
   private fxMuzzlePosition(out: Vector3): Vector3 {
+    if (this.thirdPerson && this.body) return this.body.getMuzzle(out);
     this.muzzle.getWorldPosition(out);
     this.camera.worldToLocal(out);
     const k = Math.tan(MathUtils.degToRad(this.camera.fov) * 0.5) / Math.tan(MathUtils.degToRad(Player.VIEWMODEL_FOV) * 0.5);
@@ -537,18 +668,35 @@ export class Player implements Hittable, Healable {
     const breathe = Math.sin(now * 1.7) * 0.0035 * (1 - Math.min(1, a));
     const air = this.ctrl.onGround ? 0 : clamp(-this.ctrl.vel.y * 0.004, -0.035, 0.035);
     // 리그가 있으면 재장전은 클립이 담당하므로 뷰모델 통째 기울이기는 끈다
-    const reloadDip = !this.fpRigActive && this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
+    const reloadDip = !this.fpRigActive && !this.fpDetailActive && this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
+    // 상세 1인칭 모델의 재장전: 팔·총이 한 덩어리라 탄창 교체는 화면 아래에서 일어난다.
+    // 구간은 3인칭 재장전(tools/blender/reload_timeline.py)과 같다: 총을 기울이고 → 내려서 탄창을 갈고 → 밀어 넣는 충격 → 복귀
+    let dCant = 0;
+    let dDown = 0;
+    let dSeat = 0;
+    if (this.fpDetailActive && this.weapon.reloading) {
+      const rt = this.weapon.reloadProgress(now) * this.weapon.def.reloadTime;
+      const sm = (a0: number, a1: number): number => {
+        const k = clamp((rt - a0) / (a1 - a0), 0, 1);
+        return k * k * (3 - 2 * k);
+      };
+      dCant = sm(0.03, 0.22) * (1 - sm(1.1, 1.34));
+      dDown = sm(0.16, 0.42) * (1 - sm(0.9, 1.12));
+      dSeat = sm(0.88, 0.93) * (1 - sm(0.93, 1.02));
+    }
     this.updateFpRig(dt, now);
 
     // 재장전: 총구를 살짝 내리고 몸쪽으로 당기며 안쪽으로 굴린다 (위로 들면 카메라 앞 전완 절단면이 화면에 올라온다)
-    vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03 + reloadDip * 0.04;
-    vm.position.y = this.vmBase.y + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.02 - sb * 0.04 - this.rocketKick * 0.03;
-    const rk = this.fpRigActive ? 0.4 : 1; // 리그는 카메라 원점이 피벗이라 같은 반동도 크게 보인다
+    vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03 + reloadDip * 0.04 - dCant * 0.03;
+    vm.position.y = this.vmBase.y + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.02 - sb * 0.04 - this.rocketKick * 0.03
+      + dCant * 0.02 - dDown * 0.15 + dSeat * 0.014;
+    const rk = this.fpRigActive || this.fpDetailActive ? 0.4 : 1; // 카메라 원점이 피벗이라 같은 반동도 크게 보인다
     vm.position.z = this.vmBase.z + this.recoil * 0.07 * rk + this.rocketKick * 0.2 * rk + sb * 0.03 + reloadDip * 0.05;
     // 로켓 반동은 위로 들기보다 뒤로 밀기 위주 (위로 들면 카메라 앞 전완 절단면이 보인다)
-    vm.rotation.x = this.recoil * 0.12 * rk + this.rocketKick * 0.08 + reloadDip * 0.0 + this.swayY - sb * 0.14 * (this.fpRigActive ? 0.8 : 1) - this.landKick * 1.2;
-    vm.rotation.y = this.swayX + sb * 0.28 + reloadDip * 0.14;
-    vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.35 + sb * 0.18;
+    vm.rotation.x = this.recoil * 0.12 * rk + this.rocketKick * 0.08 + reloadDip * 0.0 + this.swayY - sb * 0.14 * (this.fpRigActive ? 0.8 : 1) - this.landKick * 1.2
+      + dCant * 0.12 - dDown * 0.22;
+    vm.rotation.y = this.swayX + sb * 0.28 + reloadDip * 0.14 + dCant * 0.18;
+    vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.35 + sb * 0.18 - dCant * 0.45;
   }
 
   // ---------- 스킬 ----------
@@ -562,12 +710,12 @@ export class Player implements Hittable, Healable {
     this.stats.rockets++;
     this.sprinting = false;
     this.camera.getWorldDirection(this.camDir);
-    const aim = hitscan(this.camera.position, this.camDir, ab.range, ctx.map.meshes, ctx.hittables(), this).point;
+    const aim = hitscan(this.aimFrom(this.camDir), this.camDir, ab.range, ctx.map.meshes, ctx.hittables(), this).point;
     this.fxMuzzlePosition(this.tmp);
     const dir = aim.clone().sub(this.tmp).normalize();
     ctx.spawnProjectile(new PulseRocket(ctx, this.tmp.clone(), dir, this, (h) => this.onRocketHit(h)));
     ctx.fx.muzzleSprite(this.tmp, 0.28);
-    ctx.fx.muzzleFlash(10);
+    ctx.fx.muzzleFlash(6);
     ctx.sfx.rocketFire();
     ctx.onNoise(this.ctrl.pos, 30);
     this.rocketKick = 1;
@@ -658,12 +806,12 @@ export class Player implements Hittable, Healable {
       this.camera.getWorldDirection(this.shotDir);
       jitterDirection(this.shotDir.clone(), this.totalSpread(), this.shotDir);
     }
-    const res = hitscan(origin, this.shotDir, this.weapon.def.range, ctx.map.meshes, ctx.hittables(), this);
+    const res = hitscan(this.aimFrom(this.shotDir), this.shotDir, this.weapon.def.range, ctx.map.meshes, ctx.hittables(), this);
 
     this.fxMuzzlePosition(this.tmp);
     const hitColor = res.target ? 0xff7a4a : 0xffd27a;
     ctx.fx.bolt(this.tmp, res.point, this.ultActive ? 0xffd9a0 : 0x8ec5ff, hitColor, res.target ? 6 : 3, 160, res.normal);
-    ctx.fx.muzzleFlash(6);
+    ctx.fx.muzzleFlash(3.5);
     ctx.fx.muzzleSprite(this.tmp, 0.26);
     ctx.sfx.shoot();
     ctx.onNoise(this.ctrl.pos, 25);

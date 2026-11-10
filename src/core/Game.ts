@@ -172,8 +172,10 @@ export class Game {
       this.map.applyTextures(a.floor, a.container);
       if (a.mapKit) this.map.applyKit(a.mapKit);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
-      if (a.fpRig) this.player.applyFpRig(a.fpRig.scene, a.fpRig.clips);
+      if (a.fpDetail) this.player.applyFpDetail(a.fpDetail);
+      else if (a.fpRig) this.player.applyFpRig(a.fpRig.scene, a.fpRig.clips);
       else if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
+      if (a.playerRig) this.scene.add(this.player.applyBody(a.playerRig.scene, a.playerRig.clips));
       this.fx.setTextures(a.vfx);
       this.warmupShaders(a);
       const clips = await this.sfx.loadBank(ASSET_BASE, this.camera);

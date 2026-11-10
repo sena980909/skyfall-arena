@@ -824,7 +824,8 @@ export class Bot implements Hittable, Healable {
     this.flashUntil = this.ctx.now + 0.08;
     this.bodyMat.emissive.setHex(0xffffff);
     this.headMat.emissive.setHex(0xffffff);
-    for (const m of this.skinMats) m.emissive.setHex(0x888888);
+    // 후처리(블룸)와 겹치면 온몸이 하얗게 날아가므로 약한 붉은 기로만 번쩍인다
+    for (const m of this.skinMats) m.emissive.setHex(0x4a1e12);
     if (info.attacker) {
       this.lastSeenPos.copy(info.attacker.position);
       this.lastSeenTime = this.ctx.now;
