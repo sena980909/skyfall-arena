@@ -35,6 +35,11 @@ export class Hud {
   private readonly bossbar = $('bossbar');
   private readonly bossname = $('bossname');
   private readonly bossfill = $('bossfill');
+  private readonly objmark = $('objmark');
+  private readonly objmarkText = $('objmark-text');
+  private readonly interact = $('interact');
+  private readonly interactText = $('interact-text');
+  private readonly interactFill = $('interact-fill');
   private hmTimer = 0;
   private readonly tmp = new Vector3();
 
@@ -88,6 +93,42 @@ export class Hud {
 
   setWave(n: number, total: number): void {
     this.wave.textContent = `WAVE ${n} / ${total}`;
+  }
+
+  /** 임무 목표 표시(상단 제목·부제) */
+  setObjective(title: string, detail: string): void {
+    this.wave.textContent = title;
+    this.bots.textContent = detail;
+  }
+
+  /** 목표 지점 마커. 화면 밖이거나 뒤에 있으면 가장자리에 붙는다. null이면 숨김 */
+  setObjectiveMarker(world: Vector3 | null, camera: Camera, label = ''): void {
+    this.objmark.classList.toggle('hidden', !world);
+    if (!world) return;
+    this.tmp.copy(world).project(camera);
+    let x = this.tmp.x;
+    let y = this.tmp.y;
+    const behind = this.tmp.z > 1;
+    if (behind) {
+      x = -x;
+      y = -0.86;
+    }
+    const m = 0.86;
+    const edge = behind || Math.abs(x) > m || Math.abs(y) > m;
+    x = Math.max(-m, Math.min(m, x));
+    y = Math.max(-m, Math.min(0.74, y));
+    this.objmark.classList.toggle('edge', edge);
+    this.objmark.style.left = `${(x * 0.5 + 0.5) * window.innerWidth}px`;
+    this.objmark.style.top = `${(-y * 0.5 + 0.5) * window.innerHeight}px`;
+    this.objmarkText.textContent = label;
+  }
+
+  /** 상호작용 안내와 진행 막대. null이면 숨김 */
+  setInteract(text: string | null, progress = 0): void {
+    this.interact.classList.toggle('hidden', text === null);
+    if (text === null) return;
+    this.interactText.textContent = text;
+    this.interactFill.style.width = `${Math.round(progress * 100)}%`;
   }
 
   setBots(n: number): void {

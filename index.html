@@ -94,6 +94,13 @@
     @keyframes dmgnum { 0% { opacity: 1; margin-top: 0; } 100% { opacity: 0; margin-top: -40px; } }
 
     .lockmark { position: absolute; width: 30px; height: 30px; border: 2px solid rgba(255, 190, 90, .75); transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 8px rgba(255, 160, 60, .6); pointer-events: none; }
+    #objmark { position: absolute; transform: translate(-50%, -50%); text-align: center; pointer-events: none; color: #7ff0ff; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-shadow: 0 1px 6px rgba(0,0,0,.8); white-space: nowrap; }
+    #objmark.hidden, #interact.hidden { display: none; }
+    #objmark .diamond { width: 16px; height: 16px; margin: 0 auto 6px; border: 2px solid #7ff0ff; transform: rotate(45deg); box-shadow: 0 0 10px rgba(90, 230, 255, .8); background: rgba(90, 230, 255, .18); }
+    #objmark.edge .diamond { background: #7ff0ff; }
+    #interact { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); text-align: center; font-size: 14px; font-weight: 700; letter-spacing: 1px; text-shadow: 0 1px 6px rgba(0,0,0,.8); }
+    #interact .bar { width: 220px; height: 8px; margin: 8px auto 0; background: rgba(10, 20, 35, .7); border: 1px solid rgba(127, 240, 255, .6); border-radius: 4px; overflow: hidden; }
+    #interact .bar > div { height: 100%; width: 0; background: #7ff0ff; }
     .lockmark.primary { border-color: #ffd166; width: 38px; height: 38px; box-shadow: 0 0 14px rgba(255, 200, 80, .9); }
     .botlabel { position: absolute; transform: translate(-50%, -100%); font-size: 11px; background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 3px; color: #ffd166; white-space: nowrap; }
 
@@ -128,6 +135,8 @@
   <div id="app"></div>
 
   <div id="hud" class="hidden">
+    <div id="objmark" class="hidden"><div class="diamond"></div><span id="objmark-text"></span></div>
+    <div id="interact" class="hidden"><span id="interact-text"></span><div class="bar"><div id="interact-fill"></div></div></div>
     <div class="hud-top">
       <div class="wave" id="hud-wave">WAVE 1</div>
       <div class="bots" id="hud-bots">남은 봇 0</div>
@@ -180,7 +189,11 @@
 
   <div id="ov-menu" class="overlay loading">
     <h1>SKYFALL ARENA</h1>
-    <div class="sub">PROTOTYPE · 웨이브 섬멸전</div>
+    <div class="sub">PROTOTYPE · 임무: 탈출</div>
+    <div class="row" id="mode">
+      <button class="btn sel" data-m="mission">임무 (탈출)</button>
+      <button class="btn" data-m="arena">아레나 (웨이브)</button>
+    </div>
     <div class="row" id="difficulty">
       <button class="btn" data-d="easy">EASY</button>
       <button class="btn sel" data-d="normal">NORMAL</button>
@@ -188,7 +201,7 @@
     </div>
     <button class="btn primary" id="btn-start">클릭하여 시작</button>
     <div class="keys">
-      <b>WASD</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프 · <b>좌클릭</b> 사격 · <b>R</b> 재장전<br/>
+      <b>WASD</b> 이동 · <b>Shift</b> 달리기 · <b>Space</b> 점프 · <b>좌클릭</b> 사격 · <b>R</b> 재장전 · <b>F</b> 상호작용<br/>
       <b>우클릭</b> 펄스 로켓 · <b>E</b> 치유 필드 · <b>Q</b> 전술 조준 · <b>V</b> 3인칭 · <b>F3</b> 봇 디버그 · <b>F7</b> 후처리 · <b>F8</b> 오토파일럿 · <b>Esc</b> 일시정지
     </div>
   </div>

@@ -33,6 +33,8 @@ export class Autopilot implements PlayerInput {
   private dy = 0;
 
   target: Bot | null = null;
+  /** 임무 목표 지점(Game이 매 스텝 넣어 준다). 적이 안 보이면 그곳으로 가서 상호작용하고, urgent면 싸우지 않고 달린다 */
+  objective: { pos: Vector3; interact: boolean; urgent: boolean; radius: number } | null = null;
   private targetSince = 0;
   private errYaw = 0;
   private errPitch = 0;
@@ -109,11 +111,15 @@ export class Autopilot implements PlayerInput {
     const visible = this.visibleBots(eye);
     this.pickTarget(visible, now);
 
-    if (this.target) {
+    const obj = this.objective;
+    const atObj = !!obj && Math.hypot(p.position.x - obj.pos.x, p.position.z - obj.pos.z) < obj.radius * 0.6 && Math.abs(p.position.y - obj.pos.y) < 2.5;
+    if (this.target && !obj?.urgent) {
       this.combat(dt, this.target, visible.length, eye);
     } else {
-      this.roam(dt);
+      this.roam(dt, atObj);
     }
+    // 목표 지점 근처에서는 상호작용 키를 누르고 있는다(싸우는 중에도)
+    if (obj?.interact && Math.hypot(p.position.x - obj.pos.x, p.position.z - obj.pos.z) < obj.radius && Math.abs(p.position.y - obj.pos.y) < 2.5) this.keys.add('KeyF');
     this.abilities(visible, now);
     this.stuckCheck(dt);
   }
@@ -216,7 +222,7 @@ export class Autopilot implements PlayerInput {
     this.goalPack = null;
   }
 
-  private roam(dt: number): void {
+  private roam(dt: number, atObjective = false): void {
     const ctx = this.ctx;
     const p = ctx.player;
     const now = ctx.now;
@@ -243,6 +249,12 @@ export class Autopilot implements PlayerInput {
         if (this.goalPack !== best) this.log(`힐팩으로 이동 (HP ${p.hp})`);
         this.goalPack = best;
       }
+    }
+    if (!goal && this.objective) {
+      // 임무 목표가 있으면 그쪽으로. 도착했으면 그 자리에 선다
+      this.goalPack = null;
+      if (atObjective) return;
+      goal = this.objective.pos;
     }
     if (!goal) {
       this.goalPack = null;

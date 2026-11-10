@@ -16,6 +16,7 @@ import { Hud } from '@/ui/Hud';
 import { Player } from '@/entities/Player';
 import type { Bot } from '@/entities/Bot';
 import { WaveManager } from '@/world/WaveManager';
+import { Mission } from '@/world/Mission';
 import { HealthPack } from '@/world/HealthPack';
 import type { Projectile } from '@/combat/Projectile';
 import { DIFFICULTIES, type DifficultyId } from '@/data/difficulty';
@@ -46,6 +47,9 @@ export class Game {
 
   private state: GameState = 'menu';
   private difficultyId: DifficultyId = 'normal';
+  /** 게임 모드: 임무(목표 수행 후 탈출) 또는 아레나(웨이브 섬멸) */
+  mode: 'mission' | 'arena' = 'mission';
+  readonly mission: Mission;
   private simTime = 0;
   private accumulator = 0;
   private lastFrame = 0;
@@ -147,7 +151,25 @@ export class Game {
     this.player.ctx = this.ctx;
     this.waves = new WaveManager(this.ctx, (n, noDeath) => this.onWaveClear(n, noDeath), () => this.endGame(true));
 
+    this.mission = new Mission(this.ctx, {
+      onScore: (points, text) => {
+        this.score += points;
+        this.hud.setScore(this.score);
+        this.hud.killFeed(`${text} +${points}`, 'hs');
+      },
+      onVictory: () => this.endGame(true),
+      onDefeat: (reason) => this.endGame(false, reason),
+    });
+
     this.bindUi();
+    const modeBtns = document.querySelectorAll<HTMLButtonElement>('#mode .btn');
+    modeBtns.forEach((b) =>
+      b.addEventListener('click', () => {
+        modeBtns.forEach((x) => x.classList.remove('sel'));
+        b.classList.add('sel');
+        this.mode = b.dataset.m === 'arena' ? 'arena' : 'mission';
+      }),
+    );
     window.addEventListener('resize', () => this.onResize());
     this.input.onLockChange = (locked) => this.onLockChange(locked);
     this.input.onLockFailed = () => this.hud.killFeed('이 브라우저는 Pointer Lock을 지원하지 않아 마우스 시점이 동작하지 않습니다', 'death');
@@ -253,7 +275,13 @@ export class Game {
     this.hud.setVisible(true);
     this.hud.showOverlay(null);
     this.state = 'playing';
-    this.waves.start();
+    if (this.mode === 'mission') {
+      this.waves.reset();
+      this.mission.start();
+    } else {
+      this.mission.stop();
+      this.waves.start();
+    }
     this.input.requestLock();
   }
 
@@ -276,7 +304,7 @@ export class Game {
     this.hud.setScore(this.score);
     this.hud.killFeed(`YOU ▶ ${bot.displayName}${headshot ? ' (헤드샷)' : ''}${bot.isBoss ? ' +500' : ''}`, headshot || bot.isBoss ? 'hs' : '');
     if (bot.isBoss) this.hud.setBoss(null);
-    this.hud.setBots(this.waves.aliveBots);
+    if (this.mode === 'arena') this.hud.setBots(this.waves.aliveBots);
     this.sfx.kill();
   }
 
@@ -297,20 +325,27 @@ export class Game {
   }
 
   private respawn(): void {
-    this.player.spawn(this.map.playerSpawn, this.simTime);
+    // 임무에서는 마지막으로 달성한 목표 지점(체크포인트)에서 부활한다
+    this.player.spawn(this.mode === 'mission' ? this.mission.respawnPoint : this.map.playerSpawn, this.simTime);
     this.state = 'playing';
     this.hud.showOverlay(null);
   }
 
-  private endGame(victory: boolean): void {
+  private endGame(victory: boolean, reason = ''): void {
     if (this.state === 'ended') return;
     this.state = 'ended';
+    this.hud.setObjectiveMarker(null, this.camera);
+    this.hud.setInteract(null);
     document.exitPointerLock();
     const s = this.player.stats;
     const acc = s.shots ? Math.round((s.hits / s.shots) * 100) : 0;
     const hsr = s.hits ? Math.round((s.headshots / s.hits) * 100) : 0;
     const elapsed = Math.round(this.simTime - this.startedAt);
-    this.hud.setEnd(victory, victory ? `웨이브 ${this.waves.totalWaves}개 모두 섬멸 · ${this.ctx.difficulty.label}` : `웨이브 ${this.waves.waveNumber}에서 전멸 · ${this.ctx.difficulty.label}`, [
+    const label = this.ctx.difficulty.label;
+    const sub = this.mode === 'mission'
+      ? (victory ? `임무 완수: 탈출 성공 · ${label}` : `임무 실패: ${reason || '전멸'} · ${label}`)
+      : (victory ? `웨이브 ${this.waves.totalWaves}개 모두 섬멸 · ${label}` : `웨이브 ${this.waves.waveNumber}에서 전멸 · ${label}`);
+    this.hud.setEnd(victory, sub, [
       ['점수', String(this.score)],
       ['처치', String(s.kills)],
       ['사망', String(s.deaths)],
@@ -469,6 +504,7 @@ export class Game {
     this.ctx.now = this.simTime;
     if (this.state === 'playing') {
       if (this.autopilot) {
+        this.autopilot.objective = this.mode === 'mission' ? this.mission.goal() : null;
         this.autopilot.think(dt);
         this.player.update(dt, this.autopilot);
         this.autopilot.endFrame();
@@ -487,7 +523,8 @@ export class Game {
     for (const pr of this.projectiles) pr.update(dt);
     if (this.projectiles.some((p) => p.done)) this.projectiles = this.projectiles.filter((p) => !p.done);
     this.updatePacks(dt);
-    this.waves.update();
+    if (this.mode === 'mission') this.mission.update(dt);
+    else this.waves.update();
   }
 
   /** 공격 토큰 배분: 플레이어가 보이는 봇 중 가까운 순으로 난이도별 N명만 사격 허용 */
