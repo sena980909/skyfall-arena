@@ -120,6 +120,13 @@ export class Game {
     this.sun = sun;
 
     this.scene.add(this.map.group);
+    // 관제동 실내 조명: 점광원은 모든 재질의 셰이더 비용을 올리므로 모바일에서는 넣지 않는다(천장 조명판의 발광만 보인다)
+    if (!mobile) {
+      for (const l of this.map.interiorLights) {
+        l.layers.enable(Player.VIEWMODEL_LAYER);
+        this.scene.add(l);
+      }
+    }
     this.nav = new NavGrid(this.map);
     this.fx = new Fx(this.scene);
     this.fx.enableViewmodelLayer();
@@ -445,6 +452,8 @@ export class Game {
     const sz = Math.round(sp.z / 4) * 4;
     this.sun.target.position.set(sx, 0, sz);
     this.sun.position.set(sx + 42, 40, sz + 16);
+    // The control block cannot be seen from the arena (camera, not player: third person and the death cam move it)
+    this.map.setBlockVisible(this.camera.position.z < -32);
     this.fx.camPos.copy(this.camera.position);
     this.fx.update(dt);
     if (this.post) {

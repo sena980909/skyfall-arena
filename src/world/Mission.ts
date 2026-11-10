@@ -32,9 +32,11 @@ interface MissionHooks {
   setGate(open: boolean): void;
 }
 
-/** 임무 '탈출'의 수치. 남쪽 아레나 → 관문 → 화물 통로 → 북쪽 야드 → (탈출) 다시 남쪽 착륙장 */
-/** 중계기 1·2는 남쪽 아레나, 3은 북쪽 야드. 두 기를 복구하면 관문이 열린다 */
-const RELAY_SPOTS = [new Vector3(-32, 0, 18), new Vector3(32, 0, -18), new Vector3(-25, 0, -110)];
+/** 임무 '탈출'의 수치. 남쪽 아레나 → 관문 → 화물 통로 → 북쪽 야드 → 관제동(실내) → 야드 → (탈출) 다시 남쪽 착륙장 */
+/** 중계기 1·2는 남쪽 아레나, 3은 관제동 맨 안쪽의 관제실. 두 기를 복구하면 관문이 열린다 */
+const RELAY_SPOTS = [new Vector3(-32, 0, 18), new Vector3(32, 0, -18), new Vector3(0, 0, -162)];
+/** 관제동에 들어서면 방 안에서 기다리던 적이 나온다(서쪽 방, 동쪽 방, 관제실) */
+const BLOCK_AMBUSH = [new Vector3(-15, 0, -149), new Vector3(17, 0, -145), new Vector3(-18, 0, -162)];
 const GATE_AFTER = 2;
 const BEACON_POS = new Vector3(0, 0, -95);
 const YARD_CHECKPOINT = new Vector3(0, 0, -89);
@@ -56,7 +58,8 @@ const CYAN = 0x4fe3ff;
 
 /**
  * 임무 진행 관리 — 옵치 스토리 임무처럼 목표를 차례로 수행하고 탈출한다.
- *   아레나의 중계기 2기 복구(F 유지, 손대면 매복) → 관문 개방 → 화물 통로 돌파 → 북쪽 야드의 중계기 복구 → 신호기로 탈출선 호출
+ *   아레나의 중계기 2기 복구(F 유지, 손대면 매복) → 관문 개방 → 화물 통로 돌파 → 야드를 지나 관제동(실내)의 관제실에서 중계기 복구
+ *   → 야드로 나와 신호기로 탈출선 호출
  *   → 60초 방어 → 추적자(보스) 처치 → 55초 안에 통로를 되돌아가 남쪽 착륙장의 탈출 지점 도달
  * 죽으면 마지막으로 달성한 목표 지점(체크포인트)에서 부활하고 진행 상황은 유지된다. 목숨은 게임 전체에서 센다.
  */
@@ -71,12 +74,14 @@ export class Mission {
   private timerEnd = 0;
   private nextWaveAt = 0;
   private waveCount = 0;
-  private spawnQueue: { at: number; name: string; opts: BotOptions }[] = [];
+  private spawnQueue: { at: number; name: string; opts: BotOptions; pos?: Vector3 }[] = [];
   private readonly deadAt = new Map<Bot, number>();
   private boss: Bot | null = null;
   private lastSpawnIdx = -1;
   /** 통로 매복을 이미 터뜨렸는가 */
   private corridorSprung = false;
+  /** 관제동 매복을 이미 터뜨렸는가 */
+  private blockSprung = false;
   private botCounter = 0;
   private readonly checkpoint = new Vector3();
   private readonly tmp = new Vector3();
@@ -190,6 +195,7 @@ export class Mission {
     this.checkpoint.copy(this.ctx.map.playerSpawn);
     this.hooks.setGate(false);
     this.corridorSprung = false;
+    this.blockSprung = false;
     this.stage = 'relays';
     this.ctx.hud.setBoss(null);
     this.ctx.hud.setRest('');
@@ -201,9 +207,9 @@ export class Mission {
   // ---------- 적 등장 ----------
 
   private pickSpawn(): Vector3 {
-    // 관문이 닫혀 있으면 아레나 지점만, 열리면 야드 지점도 쓴다. 너무 먼 지점(75m 밖)은 빼서 적이 금방 도착하게 한다
+    // 관문이 닫혀 있으면 아레나 지점만, 열리면 야드와 관제동 지점도 쓴다. 너무 먼 지점(75m 밖)은 빼서 적이 금방 도착하게 한다
     const map = this.ctx.map;
-    const spawns = map.gateOpen ? [...map.botSpawns, ...map.yardSpawns] : map.botSpawns;
+    const spawns = map.gateOpen ? [...map.botSpawns, ...map.yardSpawns, ...map.blockSpawns] : map.botSpawns;
     const p = this.ctx.player.position;
     const far = spawns.map((s, i) => ({ s, i, d: s.distanceTo(p) })).filter((c) => c.d >= 22 && c.d <= 75 && c.i !== this.lastSpawnIdx);
     const pool = far.length ? far : spawns.map((s, i) => ({ s, i, d: 0 }));
@@ -225,8 +231,8 @@ export class Mission {
     }
   }
 
-  private spawn(name: string, opts: BotOptions): Bot {
-    const bot = new Bot(this.ctx, name, this.pickSpawn(), opts);
+  private spawn(name: string, opts: BotOptions, pos?: Vector3): Bot {
+    const bot = new Bot(this.ctx, name, pos ? pos.clone() : this.pickSpawn(), opts);
     this.ctx.bots.push(bot);
     this.ctx.scene.add(bot.group, bot.debugLine);
     bot.setDebug(this.ctx.debug);
@@ -298,7 +304,7 @@ export class Mission {
     const hud = ctx.hud;
     while (this.spawnQueue.length && now >= this.spawnQueue[0].at) {
       const s = this.spawnQueue.shift()!;
-      const bot = this.spawn(s.name, s.opts);
+      const bot = this.spawn(s.name, s.opts, s.pos);
       if (s.opts.boss) this.boss = bot;
     }
     this.prune();
@@ -325,7 +331,7 @@ export class Mission {
           this.hooks.onScore(MISSION_SCORE.relay, `중계기 복구 ${this.relaysDone} / ${this.relays.length}`);
           if (this.relaysDone === GATE_AFTER && !ctx.map.gateOpen) {
             this.hooks.setGate(true);
-            hud.killFeed('북쪽 관문 개방 — 화물 통로를 지나 마지막 중계기로', 'hs');
+            hud.killFeed('북쪽 관문 개방 — 통로와 야드를 지나 관제동의 마지막 중계기로', 'hs');
           }
           ctx.sfx.waveClear();
         }
@@ -338,8 +344,18 @@ export class Mission {
         this.queue(3, 0.2);
         hud.killFeed('통로 매복! 앞뒤에서 온다', 'death');
       }
+      // 관제동에 들어서면 방 안에서 기다리던 적이 나온다(한 번)
+      if (ctx.map.gateOpen && !this.blockSprung && ctx.player.position.z < -124) {
+        this.blockSprung = true;
+        BLOCK_AMBUSH.forEach((pos, i) => {
+          this.botCounter++;
+          this.spawnQueue.push({ at: now + 0.2 + i * 0.3, name: `경비병 ${this.botCounter}`, opts: i === 2 ? HEAVY : {}, pos });
+        });
+        this.spawnQueue.sort((a, b) => a.at - b.at);
+        hud.killFeed('관제동 내부에 적 — 관제실은 양옆 방으로 돌아 들어간다', 'death');
+      }
       hud.setObjective(`목표: 중계기 복구 ${this.relaysDone} / ${this.relays.length}`,
-        `${ctx.map.gateOpen ? '북쪽 야드 · ' : ''}남은 적 ${this.aliveBots}`);
+        `${ctx.map.gateOpen ? '관제동 관제실 · ' : ''}남은 적 ${this.aliveBots}`);
       hud.setRest('');
       if (this.relaysDone === this.relays.length) {
         this.stage = 'beacon';
