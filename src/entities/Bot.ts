@@ -43,7 +43,7 @@ const RETREAT_COOLDOWN = 15;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
 import {
-  GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, gaitResidual, legsYawFor, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir,
+  GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir,
 } from './GaitDir';
 
 /** Locomotion clips that share the same stride phase layout (left foot plants at phase 0). */
@@ -124,6 +124,8 @@ export class Bot implements Hittable, Healable {
   private gaitDir: GaitDir = 'fwd';
   private gaitDirHoldUntil = 0;
   private gaitDirChanged = false;
+  /** 공중에 떠 있은 시간(초). 잠깐 뜨는 계단·턱에서는 공중 자세로 바꾸지 않는다 */
+  private airTime = 0;
   /** 대각선 이동용 두 번째 클립과 그 가중치(주 클립은 currentAnim) */
   private blendAnim: string | null = null;
   private blendW = 0;
@@ -325,6 +327,10 @@ export class Bot implements Hittable, Healable {
     this.clipSpeed = CLIP_SPEED_V2;
     this.mixer = new AnimationMixer(model);
     for (const clip of clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    if (this.actions.death) {
+      this.actions.death.setLoop(LoopOnce, 1);
+      this.actions.death.clampWhenFinished = true;
+    }
     this.playAnim(this.actions.idle ? 'idle' : Object.keys(this.actions)[0], 0.15, true);
   }
 
@@ -657,7 +663,15 @@ export class Bot implements Hittable, Healable {
     if (!force && this.currentAnim !== 'idle' && now < this.animHoldUntil) return;
     // 걸음끼리(달리기↔조깅 등)는 더 오래 유지해 속도 경계에서 깜빡이지 않게 한다
     this.animHoldUntil = now + (name === 'idle' || this.currentAnim === 'idle' ? 0.2 : 0.4);
-    if ((this.animWeights[name] ?? 0) < 0.01) {
+    const prev = this.actions[this.currentAnim];
+    const mirrored = prev ? mirroredStrafePhase(this.currentAnim, name, prev.time / prev.getClip().duration) : null;
+    if (mirrored !== null) {
+      // 좌↔우 옆걸음 뒤집기: 발 위치가 이어지는 위상에서 시작하고 가중치를 바로 넘긴다(GaitDir.mirroredStrafePhase)
+      next.reset();
+      next.time = mirrored * next.getClip().duration;
+      this.animWeights[name] = Math.max(this.animWeights[name] ?? 0, this.animWeights[this.currentAnim] ?? 0);
+      this.animWeights[this.currentAnim] = 0;
+    } else if ((this.animWeights[name] ?? 0) < 0.01) {
       next.reset();
       // Gait-to-gait: start the new clip at the same stride phase so the feet line up during the crossfade.
       const cur = this.actions[this.currentAnim];
@@ -737,20 +751,33 @@ export class Bot implements Hittable, Healable {
       const moveYaw = Math.atan2(this.smoothVel.x, this.smoothVel.z);
       // 느릴 때(방향 전환 순간 등)는 속도 방향이 불안정하므로 직전 다리 방향을 유지한다
       if (speed > 0.9) {
-        // 교전 중: 전진·뒷걸음·좌우 옆걸음 중 허리 비틀림이 가장 작은 걸음을 고른다(GaitDir.ts).
-        // 옆으로 움직일 때 다리는 조준 쪽을 본 채 옆걸음하므로 허리가 90°씩 꺾이지 않는다. 교전 중이 아니면 가는 쪽을 보고 달린다
-        const allowed = !engaged ? GAIT_FWD : this.actions.strafeL && this.actions.strafeR ? GAIT_ALL : GAIT_FWD_BACK;
-        let dir = pickGaitDir(moveYaw, aimYaw, this.gaitDir, allowed);
-        if (dir !== this.gaitDir && now < this.gaitDirHoldUntil && allowed.includes(this.gaitDir)) dir = this.gaitDir;
-        if (dir !== this.gaitDir) {
-          this.gaitDir = dir;
-          this.gaitDirHoldUntil = now + 0.3;
-          this.gaitDirChanged = true;
+        if (this.actions.strafeL && this.actions.strafeR) {
+          // 다리가 향할 곳: 교전 중이면 조준 쪽, 아니면 가는 쪽. 걸음(전진·뒷걸음·좌우 옆걸음)은 다리가 '지금 실제로' 향한 방향을 기준으로
+          // 고르고, 남는 차이는 옆 걸음을 섞어 메운다(GaitDir.ts). 다리가 새 방향으로 도는 동안에도 발이 실제 이동 방향으로 디딘다
+          this.legsYaw = engaged ? aimYaw : moveYaw;
+          let dir = pickGaitDir(moveYaw, this.facingYaw, this.gaitDir, GAIT_ALL, 0.2);
+          if (dir !== this.gaitDir && now < this.gaitDirHoldUntil) dir = this.gaitDir;
+          if (dir !== this.gaitDir) {
+            this.gaitDir = dir;
+            this.gaitDirHoldUntil = now + 0.15;
+            this.gaitDirChanged = true;
+          }
+          this.backpedal = dir === 'back';
+          this.gaitBlend = true;
+        } else {
+          // 이전 방식 모델(옆걸음 클립 없음): 다리를 이동 방향(뒷걸음이면 그 반대)으로 돌린다
+          const allowed = engaged ? GAIT_FWD_BACK : GAIT_FWD;
+          let dir = pickGaitDir(moveYaw, aimYaw, this.gaitDir, allowed);
+          if (dir !== this.gaitDir && now < this.gaitDirHoldUntil && allowed.includes(this.gaitDir)) dir = this.gaitDir;
+          if (dir !== this.gaitDir) {
+            this.gaitDir = dir;
+            this.gaitDirHoldUntil = now + 0.3;
+            this.gaitDirChanged = true;
+          }
+          this.backpedal = dir === 'back';
+          this.gaitBlend = false;
+          this.legsYaw = legsYawFor(moveYaw, dir);
         }
-        this.backpedal = dir === 'back';
-        // 옆걸음 클립이 있으면 다리는 조준 쪽을 보고, 대각선은 두 걸음을 섞어 맞춘다(아래 클립 선택). 없으면 다리를 이동 방향으로 돌린다
-        this.gaitBlend = engaged && allowed === GAIT_ALL;
-        this.legsYaw = this.gaitBlend ? aimYaw : legsYawFor(moveYaw, dir);
       }
     } else {
       this.legsYaw = aimYaw;
@@ -831,14 +858,14 @@ export class Bot implements Hittable, Healable {
       this.blendAnim = null;
       this.blendW = 0;
       if (prim) {
-        let t1 = ts(prim.v, 0.5, 1.8);
+        let t1 = ts(prim.v, 0.12, 1.8);
         if (this.gaitBlend) {
           // 대각선: 이동 방향이 주 걸음에서 벗어난 만큼 옆 걸음을 섞는다. 다리가 아직 조준 쪽으로 도는 중이면 그 차이도 여기서 메운다
           const res = gaitResidual(Math.atan2(this.smoothVel.x, this.smoothVel.z), this.facingYaw, this.gaitDir);
           const sec = Math.abs(res) > 0.06 ? clipFor(neighborDir(this.gaitDir, res)) : null;
           if (sec && sec.name !== prim.name) {
             const b = solveGaitBlend(sp, res, prim.v, this.actions[prim.name].getClip().duration, sec.v, this.actions[sec.name].getClip().duration);
-            const k = Math.max(0.5, Math.min(1.8, b.ts1)) / (b.ts1 || 1);
+            const k = Math.max(0.12, Math.min(1.8, b.ts1)) / (b.ts1 || 1);
             t1 = b.ts1 * k;
             this.blendAnim = sec.name;
             this.blendW = b.w2;
@@ -852,6 +879,13 @@ export class Bot implements Hittable, Healable {
         this.playAnim('walk', 0.15);
         this.actions.walk.timeScale = -ts(cs.walk, 0.5, 2.2);
       }
+    }
+    // 공중(플랫폼에서 뛰어내릴 때): 달리는 동작 대신 공중 자세
+    this.airTime = this.ctrl.onGround ? 0 : this.airTime + dt;
+    if (this.airTime > 0.12 && this.actions.air) {
+      this.playAnim('air', 0.12, true);
+      this.blendAnim = null;
+      this.blendW = 0;
     }
     this.updateMixer(dt);
     this.applyTorsoTwist();
@@ -920,6 +954,8 @@ export class Bot implements Hittable, Healable {
 
   /** 사망 넘어짐 상태 (생성 death 클립은 쓰러지지 않아 절차적으로 넘어뜨린다) */
   private fallT = -1;
+  /** 사망 클립으로 쓰러지는 중(없으면 몸 전체를 통째로 넘어뜨린다) */
+  private deathClip = false;
   private readonly fallAxis = new Vector3(1, 0, 0);
   private fallTwist = 0;
   private static readonly FALL_DUR = 0.55;
@@ -946,8 +982,13 @@ export class Bot implements Hittable, Healable {
     this.fallAxis.crossVectors(Bot.UP, this.tmp).normalize();
     this.fallTwist = (headshot ? 0.5 : 0.25) * (Math.random() < 0.5 ? -1 : 1);
     this.fallT = 0;
-    // 중립 자세로 짧게 블렌드(달리기 중 사망 시 팔다리가 벌어진 채 굳지 않게)
-    if (this.mixer && this.actions.idle) this.playAnim('idle', 0.12, true);
+    this.blendAnim = null;
+    this.blendW = 0;
+    if (this.mixer && this.actions.death) {
+      // 사망 클립: 무릎이 꺾이며 뒤로 쓰러져 눕는다. 다리가 향한 쪽의 반대로 넘어진다
+      this.deathClip = true;
+      this.playAnim('death', 0.1, true);
+    } else if (this.mixer && this.actions.idle) this.playAnim('idle', 0.12, true); // 이전 방식: 중립 자세로 굳힌 뒤 통째로 넘어뜨린다
     this.ctx.onBotKilled(this, headshot);
   }
 
@@ -955,6 +996,17 @@ export class Bot implements Hittable, Healable {
   private updateDeath(dt: number): void {
     if (this.fallT < 0) return;
     this.fallT += dt;
+    if (this.deathClip) {
+      // 허리 비틀림은 빠르게 풀고, 조준 피치 등 절차적 회전은 더 얹지 않는다
+      this.torsoTwist *= Math.max(0, 1 - dt * 10);
+      this.updateMixer(dt);
+      this.applyTorsoTwist();
+      if (this.fallT >= this.actions.death.getClip().duration + Bot.LIE_DUR) {
+        this.fallT = -1;
+        this.ctx.fx.dissolve(this.group, this.isBoss ? 1.2 : 0.6);
+      }
+      return;
+    }
     const k = Math.min(1, this.fallT / Bot.FALL_DUR);
     // 가속(중력) + 바닥에서 살짝 튕김
     let ang = (Math.PI / 2) * k * k;

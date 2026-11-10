@@ -133,6 +133,7 @@ export class Player implements Hittable, Healable {
   body: PlayerBody | null = null;
   /** 3인칭 카메라에서 몸 깊이까지의 거리(조준 광선을 몸 앞에서 시작하는 데 쓴다) */
   private tpDist = 0;
+  private tpLastT = 0;
   private readonly tpRay = new Raycaster();
   private readonly tpPivot = new Vector3();
   private readonly tpDir = new Vector3();
@@ -417,6 +418,7 @@ export class Player implements Hittable, Healable {
     this.pitch = 0;
     this.recoil = 0;
     this.ultUntil = 0;
+    this.rocketKickUntil = 0;
     this.rocketReadyAt = Math.min(this.rocketReadyAt, now);
     this.fieldReadyAt = Math.min(this.fieldReadyAt, now);
     this.body?.reset(this.yaw);
@@ -506,6 +508,12 @@ export class Player implements Hittable, Healable {
       const hit = this.tpRay.intersectObjects(meshes, false)[0];
       if (hit) dist = Math.max(0.5, hit.distance - 0.3);
     }
+    // 가려지면 바로 당기고(벽 안으로 들어가면 안 된다), 트이면 천천히 물러난다 → 기둥·상자 옆을 지날 때 거리가 앞뒤로 튀지 않는다
+    const tnow = this.ctx?.now ?? 0;
+    const tdt = Math.min(0.1, Math.max(0, tnow - this.tpLastT));
+    if (tnow < this.tpLastT || tnow - this.tpLastT > 0.5 || this.tpDist <= 0) this.tpDist = dist; // 첫 프레임·부활 직후
+    else if (dist > this.tpDist) dist = this.tpDist + (dist - this.tpDist) * Math.min(1, tdt * 3.5);
+    this.tpLastT = tnow;
     this.tpDist = dist;
     this.camera.position.copy(this.tpPivot).addScaledVector(this.tpDir, dist);
   }
@@ -617,7 +625,7 @@ export class Player implements Hittable, Healable {
     if (this.thirdPerson && this.body) {
       this.body.update(dt, {
         pos: this.ctrl.pos, yaw: this.yaw, pitch: this.pitch, onGround: this.ctrl.onGround,
-        reload: this.weapon.reloading ? this.weapon.reloadProgress(now) : null, kick: this.recoil,
+        reload: this.weapon.reloading ? this.weapon.reloadProgress(now) : null, kick: this.recoil, sprint: this.sprinting,
       });
     }
     this.syncCamera();

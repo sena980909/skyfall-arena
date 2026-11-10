@@ -1,8 +1,10 @@
 import {
-  AnimationAction, AnimationClip, AnimationMixer, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
+  AnimationAction, AnimationClip, AnimationMixer, DoubleSide, Group, LoopOnce, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { GAIT_ALL, GAIT_FWD_BACK, gaitResidual, legsYawFor, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir } from './GaitDir';
+import {
+  GAIT_ALL, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir,
+} from './GaitDir';
 
 /** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
 const CLIP_SPEED: Record<string, number> = {
@@ -27,6 +29,8 @@ export interface PlayerBodyState {
   reload: number | null;
   /** 사격 반동 0..1 */
   kick: number;
+  /** 질주 중(총을 내리고 달린다) */
+  sprint: boolean;
 }
 
 function wrap(a: number): number {
@@ -63,6 +67,9 @@ export class PlayerBody {
   private gait = 'idle';
   private gait2 = '';
   private gaitSpeed = 0;
+  private airTime = 0;
+  private sprintBlend = 0;
+  private dying = false;
   private readonly vel = new Vector3();
   private readonly raw = new Vector3();
   private readonly lastPos = new Vector3();
@@ -122,6 +129,10 @@ export class PlayerBody {
         a.timeScale = 0; // 시간은 진행률로 직접 맞춘다
         this.reloadAction = a;
       } else {
+        if (clip.name === 'death') {
+          a.setLoop(LoopOnce, 1);
+          a.clampWhenFinished = true;
+        }
         this.actions[clip.name] = a;
         this.weights[clip.name] = clip.name === 'idle' ? 1 : 0;
       }
@@ -134,6 +145,10 @@ export class PlayerBody {
     this.deathT = -1;
     this.group.rotation.set(0, this.legsYaw, 0);
     this.reloadBlend = 0;
+    this.dying = false;
+    this.airTime = 0;
+    this.sprintBlend = 0;
+    for (const k of Object.keys(this.actions)) this.weights[k] = k === 'idle' ? 1 : 0;
     this.hasLast = false;
     this.vel.set(0, 0, 0);
   }
@@ -167,7 +182,7 @@ export class PlayerBody {
       const moveYaw = this.moveYaw;
       // 전진·뒷걸음·좌우 옆걸음 중 허리 비틀림이 가장 작은 걸음을 고른다(GaitDir.ts). 옆으로 갈 때 다리는 조준 쪽을 본 채 옆걸음한다
       const allowed = this.actions.strafeL && this.actions.strafeR ? GAIT_ALL : GAIT_FWD_BACK;
-      let dir = pickGaitDir(moveYaw, aimYaw, this.dir, allowed);
+      let dir = pickGaitDir(moveYaw, blend ? this.legsYaw : aimYaw, this.dir, allowed, blend ? 0.2 : 0.3);
       this.dirHold -= dt;
       if (dir !== this.dir && this.dirHold > 0) dir = this.dir;
       if (dir !== this.dir) {
@@ -226,14 +241,27 @@ export class PlayerBody {
         }
       }
     }
+    // 공중: 달리는 동작 대신 공중 자세 (잠깐 뜨는 턱에서는 바꾸지 않는다)
+    this.airTime = s.onGround ? 0 : this.airTime + dt;
+    if (this.airTime > 0.08 && this.actions.air) {
+      name = 'air';
+      name2 = '';
+      w2 = 0;
+    }
     this.gait2 = name2;
     if (!this.actions[name]) name = 'idle';
     // Gait-to-gait: bring the incoming clip to the same stride phase as the outgoing one so the feet line up while blending.
     if (name !== this.gait) {
       const from = this.actions[this.gait];
       const to = this.actions[name];
-      if (from && to && name !== 'idle' && this.gait !== 'idle' && this.weights[name] < 0.05) {
-        to.time = (from.time / from.getClip().duration) * to.getClip().duration;
+      if (from && to && name !== 'idle' && this.gait !== 'idle') {
+        const mirrored = mirroredStrafePhase(this.gait, name, from.time / from.getClip().duration);
+        if (mirrored !== null) {
+          // 좌↔우 뒤집기: 발 위치가 이어지는 위상에서 새 클립을 시작하고 가중치를 바로 넘긴다(섞는 동안 발이 미끄러지지 않게)
+          to.time = mirrored * to.getClip().duration;
+          this.weights[name] = Math.max(this.weights[name], this.weights[this.gait]);
+          this.weights[this.gait] = 0;
+        } else if (this.weights[name] < 0.05) to.time = (from.time / from.getClip().duration) * to.getClip().duration;
       }
       this.gait = name;
     }
@@ -249,7 +277,8 @@ export class PlayerBody {
       const cs = CLIP_SPEED[k];
       // 공중에서는 다리를 천천히 젓는다
       const t = k === name ? ts1 : k === name2 ? ts2 : speed / (cs || 1);
-      a.timeScale = cs ? (s.onGround ? Math.max(0.4, Math.min(2, t)) : 0.35) : 1;
+      // 재생 배율이 속도를 그대로 따라가게 한다(하한을 두면 방향을 뒤집는 순간처럼 속도가 0 근처일 때 발만 움직여 미끄러진다)
+      a.timeScale = cs ? (s.onGround ? Math.max(0.05, Math.min(2, t)) : 0.35) : 1;
     }
     // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다
     const pa = this.actions[name];
@@ -279,7 +308,10 @@ export class PlayerBody {
     if (this.arms) {
       this.group.updateMatrixWorld(true);
       // 재장전 중에는 총을 수평 가까이 둔다
-      const pitch = Math.max(-0.9, Math.min(0.9, s.pitch * (1 - 0.6 * this.reloadBlend) + s.kick * 0.05));
+      // 질주 중에는 총을 내린다
+      this.sprintBlend += ((s.sprint ? 1 : 0) - this.sprintBlend) * Math.min(1, dt * 8);
+      const sb = this.sprintBlend;
+      const pitch = Math.max(-0.9, Math.min(0.9, s.pitch * (1 - 0.6 * this.reloadBlend) * (1 - sb) - 0.55 * sb + s.kick * 0.05));
       this.axis.set(-Math.cos(aimYaw), 0, Math.sin(aimYaw));
       this.rotateWorld(this.arms, this.q.setFromAxisAngle(this.axis, pitch));
     }
@@ -289,11 +321,32 @@ export class PlayerBody {
   updateDeath(dt: number): void {
     if (this.deathT < 0) this.deathT = 0;
     this.deathT += dt;
+    const death = this.actions.death;
+    if (death) {
+      // 사망 클립: 무릎이 꺾이며 뒤로 쓰러져 눕는다
+      if (!this.dying) {
+        this.dying = true;
+        death.reset();
+        death.play();
+      }
+      let sum = 0;
+      for (const k of Object.keys(this.actions)) {
+        this.weights[k] += ((k === 'death' ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 12);
+        sum += this.weights[k];
+      }
+      for (const k of Object.keys(this.actions)) this.actions[k].setEffectiveWeight(this.weights[k] / (sum || 1));
+      this.reloadBlend += (0 - this.reloadBlend) * Math.min(1, dt * 12);
+      this.reloadAction?.setEffectiveWeight(this.reloadBlend);
+      for (let i = 0; i < this.poseBones.length; i++) this.poseBones[i].quaternion.copy(this.clean[i]);
+      this.mixer.update(dt);
+      for (let i = 0; i < this.poseBones.length; i++) this.clean[i].copy(this.poseBones[i].quaternion);
+      return;
+    }
+    // 클립이 없는 모델: 몸 전체를 통째로 뒤로 넘어뜨린다
     const k = Math.min(1, this.deathT / 0.6);
     const ease = k * k;
     const bounce = k >= 1 ? Math.max(0, Math.sin(Math.min(1, (this.deathT - 0.6) / 0.25) * Math.PI)) * 0.05 : 0;
     this.group.rotation.x = -(Math.PI / 2 - 0.08) * ease + bounce;
-    // Let the arms and rifle drop toward the legs instead of staying locked in the aiming pose (they would point at the sky).
     for (let i = 0; i < this.poseBones.length; i++) this.poseBones[i].quaternion.copy(this.clean[i]);
     if (this.arms) {
       this.group.updateMatrixWorld(true);

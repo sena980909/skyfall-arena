@@ -395,14 +395,14 @@ def frame_xf(rest_o, rest_d, rest_u, new_o, new_d, new_u):
     return Matrix.Translation(new_o) @ F(new_d, new_u) @ F(rest_d, rest_u).inverted() @ Matrix.Translation(-Vector(rest_o))
 
 
-def solve_leg(sfx, sx, Hj, target, pitch, X):
+def solve_leg(sfx, sx, Hj, target, pitch, X, hint=None):
     g = lambda n: f'{n}.{sfx}'  # noqa: E731
     d = target - Hj
     dist = min(d.length, THIGH + SHIN - 0.004)
     n = d.normalized()
     a = (THIGH * THIGH - SHIN * SHIN + dist * dist) / (2 * dist)
     h = math.sqrt(max(THIGH * THIGH - a * a, 1e-8))
-    e = A.orth(Vector((sx * 0.12, 1.0, 0.0)), n)
+    e = A.orth(Vector(hint) if hint is not None else Vector((sx * 0.12, 1.0, 0.0)), n)
     K = Hj + n * a + e * h
     Ac = Hj + n * dist
     X[g('thigh')] = frame_xf(REST[g('thigh')], (0, 0, -1), (0, 1, 0), Hj, K - Hj, e)
@@ -502,7 +502,50 @@ def pose_reload(t):
     return X
 
 
+DEATH_LEN = 26 / FPS
+
+
+def pose_special(clip, t):
+    """사망(무릎이 꺾이며 뒤로 쓰러져 눕는다)과 공중 자세(한 다리 앞, 한 다리 뒤). 발은 IK로 푼다."""
+    X = {}
+    if clip == 'air':
+        hipsX = Matrix.Translation((0.0, 0.0, -0.02)) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.08)
+        torsoX = hipsX @ L.rot_about(TORSO_PIVOT, (1, 0, 0), 0.04)
+        headX = torsoX
+        armsX = torsoX @ L.rot_about(ARMS_PIVOT, (1, 0, 0), 0.04)
+        feet = {'L': (Vector((-0.11, 0.20, 0.30)), -0.25, None), 'R': (Vector((0.11, -0.17, 0.20)), -0.55, None)}
+    else:
+        u = min(1.0, t / DEATH_LEN)
+        c = TL.ramp(u, 0.0, 0.35)             # 무릎이 꺾이고 팔이 풀린다
+        f = TL.ramp(u, 0.12, 0.92) ** 1.5     # 뒤로 넘어간다(가속)
+        th = f * (math.pi / 2 - 0.05)
+        hipsX = (Matrix.Translation((0.0, -0.08 * c - 0.47 * f, -0.28 * c * (1 - f) - 0.75 * f))
+                 @ L.rot_about(HIPS_PIVOT, (1, 0, 0), th))
+        torsoX = hipsX @ L.rot_about(TORSO_PIVOT, (1, 0, 0), 0.3 * c * (1 - f))
+        headX = torsoX @ L.rot_about(NECK, (1, 0, 0), 0.35 * c * (1 - 0.6 * f))
+        armsX = (torsoX @ L.rot_about(ARMS_PIVOT, (0, 0, 1), 0.3 * c)
+                 @ L.rot_about(ARMS_PIVOT, (1, 0, 0), -1.05 * TL.ramp(u, 0.04, 0.5)))
+        k = TL.ramp(u, 0.45, 0.95)
+        fl = Vector(TL.lerp3((-0.125, 0.06, ANKLE_H), (-0.14, 0.24, 0.09), k))
+        fr = Vector(TL.lerp3((0.125, -0.06, ANKLE_H), (0.14, 0.02, 0.09), k))
+        feet = {'L': (fl, 1.0 * k, TL.lerp3((-0.12, 1.0, 0.0), (-0.25, 0.0, 1.0), f)),
+                'R': (fr, 1.1 * k, TL.lerp3((0.12, 1.0, 0.0), (0.25, 0.0, 1.0), f))}
+    X['hips'] = hipsX
+    X['torso'] = torsoX
+    X['head'] = headX
+    X['armsgun'] = armsX
+    X['muzzle'] = armsX
+    for b in EXTRA:
+        X[b] = armsX
+    for sfx, sx in (('L', -1), ('R', 1)):
+        tgt, pitch, hint = feet[sfx]
+        solve_leg(sfx, sx, hipsX @ Vector((sx * HIP_X, 0, HIP_Z)), tgt, pitch, X, hint)
+    return X
+
+
 def pose_any(clip, t):
+    if clip in ('death', 'air'):
+        return pose_special(clip, t)
     return pose_reload(t) if clip == 'reload' else pose(clip, t)
 
 
@@ -542,6 +585,10 @@ else:
         T = GAITS[clip]['T']
         for q in range(4):
             shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (0.4, 4.0, 1.0))
+if not ARMS_ONLY:
+    for tt in (0.15, 0.35, 0.55, 0.85):
+        shot(f'{PFX}_death_{int(tt * 100):03d}', 'death', tt, (4.4, -0.5, 1.0), look=(0, -0.5, 0.6))
+    shot(f'{PFX}_air', 'air', 0.0, (3.8, 0.2, 1.0))
 if 'preview_only' in argv:
     print('PREVIEW_ONLY_DONE')
     sys.exit(0)
@@ -565,6 +612,7 @@ if ARMS_ONLY:
     acts = [bake('idle', 2)]
 else:
     acts = [bake('idle', 90, BODY)] + [bake(name, cfg['n'], BODY) for name, cfg in GAITS.items()]
+    acts += [bake('death', round(DEATH_LEN * FPS), BODY), bake('air', 2, BODY)]
 if MODE in ('player', 'fp'):
     acts.append(bake('reload', round(TL.RELOAD_LEN * FPS), None if ARMS_ONLY else set(EXTRA)))
 slot_of = {a.name: (a.slots[0] if getattr(a, 'slots', None) else None) for a in acts}

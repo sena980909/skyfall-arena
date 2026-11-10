@@ -77,3 +77,17 @@ export function solveGaitBlend(speed: number, residual: number, v1: number, T1: 
   if (ts1 < 1e-4) return { w2: 0, ts1: 0, ts2: 0 };
   return { w2: sn / b / ts1, ts1, ts2: (ts1 * T2) / T1 };
 }
+
+/** 옆걸음 클립의 접지 비율(tools/blender/build_bot_rig.py의 STRAFE beta와 같은 값) */
+const STRAFE_BETA: Record<string, number> = { strafeL: 0.42, strafeR: 0.42, strafeFastL: 0.3, strafeFastR: 0.3 };
+
+/**
+ * 반대쪽 옆걸음으로 바꿀 때(좌↔우) 새 클립을 시작할 위상(0..1). 아니면 null.
+ * 좌우 옆걸음은 발의 좌우 움직임만 반대라서, 위상을 (접지 비율 − 지금 위상)으로 뒤집으면 두 발의 위치가 그대로 이어진다.
+ * 같은 위상에서 섞으면 두 클립의 발 움직임이 서로 지워져 방향을 뒤집는 동안 발이 미끄러진다.
+ */
+export function mirroredStrafePhase(from: string, to: string, phase: number): number | null {
+  const bt = STRAFE_BETA[to];
+  if (STRAFE_BETA[from] === undefined || bt === undefined || from.slice(-1) === to.slice(-1)) return null;
+  return (((bt - phase) % 1) + 1) % 1;
+}
