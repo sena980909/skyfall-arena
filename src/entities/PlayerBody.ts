@@ -2,9 +2,12 @@ import {
   AnimationAction, AnimationClip, AnimationMixer, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { GAIT_ALL, GAIT_FWD_BACK, legsYawFor, pickGaitDir, type GaitDir } from './GaitDir';
 
 /** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
-const CLIP_SPEED: Record<string, number> = { walk: 1.6, jog: 2.8, run: 5.5, sprint: 8.25, back: 5.5 };
+const CLIP_SPEED: Record<string, number> = {
+  walk: 1.6, jog: 2.8, run: 5.5, sprint: 8.25, back: 5.5, strafeL: 2.8, strafeR: 2.8, strafeFastL: 5.5, strafeFastR: 5.5,
+};
 /** 허리 비틀림 한계(라디안). 넘으면 다리가 조준 쪽으로 끌려온다. 옆걸음 때 몸이 과하게 꼬이지 않게 봇(1.9)보다 작게 둔다 */
 const MAX_TWIST = 1.57;
 /** 재장전 클립이 움직이는 본(팔·총·탄창). 보행 클립에서는 이 트랙을 빼고, 재장전 클립에는 이 트랙만 남긴다 */
@@ -51,7 +54,9 @@ export class PlayerBody {
   private readonly clean: Quaternion[] = [];
   private readonly poseBones: Object3D[] = [];
   private legsYaw = 0;
-  private backpedal = false;
+  /** 걸음 방향(전진·뒷걸음·좌우 옆걸음)과 최소 유지 시간 */
+  private dir: GaitDir = 'fwd';
+  private dirHold = 0;
   private gait = 'idle';
   private readonly vel = new Vector3();
   private readonly raw = new Vector3();
@@ -149,11 +154,17 @@ export class PlayerBody {
     let target = aimYaw;
     if (moving) {
       const moveYaw = Math.atan2(this.vel.x, this.vel.z);
-      const rel = Math.abs(wrap(moveYaw - aimYaw));
-      // 뒤로 가는 중이면 다리를 뒤집고 뒷걸음 클립 (경계에서 떨지 않게 여유를 둔다)
-      this.backpedal = this.backpedal ? rel > 1.4 : rel > 1.92;
-      target = this.backpedal ? moveYaw + Math.PI : moveYaw;
-    } else this.backpedal = false;
+      // 전진·뒷걸음·좌우 옆걸음 중 허리 비틀림이 가장 작은 걸음을 고른다(GaitDir.ts). 옆으로 갈 때 다리는 조준 쪽을 본 채 옆걸음한다
+      const allowed = this.actions.strafeL && this.actions.strafeR ? GAIT_ALL : GAIT_FWD_BACK;
+      let dir = pickGaitDir(moveYaw, aimYaw, this.dir, allowed);
+      this.dirHold -= dt;
+      if (dir !== this.dir && this.dirHold > 0) dir = this.dir;
+      if (dir !== this.dir) {
+        this.dir = dir;
+        this.dirHold = 0.25;
+      }
+      target = legsYawFor(moveYaw, dir);
+    } else this.dir = 'fwd';
     let d = wrap(target - this.legsYaw);
     // 거의 반대로 돌 때는 조준 쪽을 지나가는 방향으로 (반대로 돌면 상체가 한 바퀴 돈다)
     if (Math.abs(d) > 2.6) {
@@ -170,7 +181,15 @@ export class PlayerBody {
 
     // 클립 선택: 속도 구간(걷기·조깅·달리기 발 속도의 기하평균 경계)
     let name = 'idle';
-    if (moving) name = this.backpedal ? 'back' : speed < 2.12 ? 'walk' : speed < 3.92 ? 'jog' : speed < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
+    if (moving) {
+      if (this.dir === 'back') name = 'back';
+      else if (this.dir === 'left' || this.dir === 'right') {
+        // 느린·빠른 옆걸음 경계(3.92m/s)에 ±15% 여유: 좌우로 방향을 바꿀 때 속도가 잠깐 떨어져도 클립이 왔다 갔다 하지 않는다
+        const fast = speed > 3.92 * (this.gait.startsWith('strafeFast') ? 0.6 : 1.15);
+        name = (fast ? 'strafeFast' : 'strafe') + (this.dir === 'left' ? 'L' : 'R');
+      }
+      else name = speed < 2.12 ? 'walk' : speed < 3.92 ? 'jog' : speed < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
+    }
     if (!this.actions[name]) name = 'idle';
     // Gait-to-gait: bring the incoming clip to the same stride phase as the outgoing one so the feet line up while blending.
     if (name !== this.gait) {

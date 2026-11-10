@@ -34,16 +34,18 @@ const MEMORY_SECONDS = 3;
  * 클립의 발 접지 속도(m/s, 모델 스케일 1, timeScale 1). 재생 속도 = 실제 이동 속도 / 이 값 → 발이 미끄러지지 않는다.
  * 브라우저에서 발 본의 접지 구간 이동 속도를 재서 넣은 값.
  */
-const CLIP_SPEED = { run: 5.6, jog: 3.0, walk: 1.55, back: 1.43 };
+const CLIP_SPEED = { run: 5.6, jog: 3.0, walk: 1.55, back: 1.43, strafe: 2.8, strafeFast: 5.5 };
 /** Blender 제작 리그(bot_rig.glb)의 클립 속도: tools/blender/build_bot_rig.py의 GAITS와 같은 값 */
-const CLIP_SPEED_V2 = { run: 4.7, jog: 2.8, walk: 1.6, back: 3.2 };
+const CLIP_SPEED_V2 = { run: 4.7, jog: 2.8, walk: 1.6, back: 3.2, strafe: 2.8, strafeFast: 5.5 };
 const ENGAGE_MAX = 20;
 const ENGAGE_MIN = 10;
 const RETREAT_COOLDOWN = 15;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
+import { GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, legsYawFor, pickGaitDir, type GaitDir } from './GaitDir';
+
 /** Locomotion clips that share the same stride phase layout (left foot plants at phase 0). */
-const GAIT_CLIPS = new Set(['walk', 'jog', 'run', 'back']);
+const GAIT_CLIPS = new Set(['walk', 'jog', 'run', 'back', 'strafeL', 'strafeR', 'strafeFastL', 'strafeFastR']);
 
 export class Bot implements Hittable, Healable {
   readonly hero = RAVEN;
@@ -116,6 +118,10 @@ export class Bot implements Hittable, Healable {
   private moving = false;
   /** 교전 중 조준 방향 반대로 이동(후퇴) 중: 다리는 이동 반대쪽을 보고 뒷걸음 클립 재생 */
   private backpedal = false;
+  /** 지금 걸음 방향(전진·뒷걸음·좌우 옆걸음)과, 너무 자주 바뀌지 않게 하는 유지 시간 */
+  private gaitDir: GaitDir = 'fwd';
+  private gaitDirHoldUntil = 0;
+  private gaitDirChanged = false;
   /** 상체 비틀림(rad): 다리는 이동 방향, 상체는 조준 방향 */
   private torsoTwist = 0;
   /** 상체가 바라보는 월드 요(rad). 다리 회전과 독립적으로 조준 방향을 각속도 제한으로 따라간다 */
@@ -719,21 +725,25 @@ export class Bot implements Hittable, Healable {
       const moveYaw = Math.atan2(this.smoothVel.x, this.smoothVel.z);
       // 느릴 때(방향 전환 순간 등)는 속도 방향이 불안정하므로 직전 다리 방향을 유지한다
       if (speed > 0.9) {
-        // 교전 중: 이동이 조준과 110° 넘게 벌어지면 뒷걸음, 80° 안이면 전진.
-        // 그 사이(옆걸음)는 지금 다리 방향에 가까운 쪽을 고른다 → 좌우로 방향을 뒤집어도 다리를 180° 돌리지 않고 앞걸음/뒷걸음만 바꾼다
-        let back = false;
-        if (engaged) {
-          const rel = Math.abs(wrap(moveYaw - aimYaw));
-          if (rel > 1.92) back = true;
-          else if (rel < 1.4) back = false;
-          else back = Math.abs(wrap(moveYaw + Math.PI - this.facingYaw)) < Math.abs(wrap(moveYaw - this.facingYaw));
+        // 교전 중: 전진·뒷걸음·좌우 옆걸음 중 허리 비틀림이 가장 작은 걸음을 고른다(GaitDir.ts).
+        // 옆으로 움직일 때 다리는 조준 쪽을 본 채 옆걸음하므로 허리가 90°씩 꺾이지 않는다. 교전 중이 아니면 가는 쪽을 보고 달린다
+        const allowed = !engaged ? GAIT_FWD : this.actions.strafeL && this.actions.strafeR ? GAIT_ALL : GAIT_FWD_BACK;
+        let dir = pickGaitDir(moveYaw, aimYaw, this.gaitDir, allowed);
+        if (dir !== this.gaitDir && now < this.gaitDirHoldUntil && allowed.includes(this.gaitDir)) dir = this.gaitDir;
+        if (dir !== this.gaitDir) {
+          this.gaitDir = dir;
+          this.gaitDirHoldUntil = now + 0.3;
+          this.gaitDirChanged = true;
         }
-        this.backpedal = back;
-        this.legsYaw = back ? moveYaw + Math.PI : moveYaw;
+        this.backpedal = dir === 'back';
+        this.legsYaw = legsYawFor(moveYaw, dir);
       }
     } else {
       this.legsYaw = aimYaw;
-      if (now >= this.backHoldUntil) this.backpedal = false;
+      if (now >= this.backHoldUntil) {
+        this.backpedal = false;
+        this.gaitDir = 'fwd';
+      }
     }
     const maxTurn = (this.moving ? 7 : 4) * dt; // 이동 중 ≈ 400°/s, 제자리에서는 천천히
     let legTurn = wrap(this.legsYaw - this.facingYaw);
@@ -778,8 +788,20 @@ export class Bot implements Hittable, Healable {
       const gs = this.gaitSpeed / (this.group.scale.x || 1);
       const ts = (clipSpeed: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, sp / clipSpeed));
       const cs = this.clipSpeed;
-      if (this.backpedal && this.actions.back) {
-        this.playAnim('back', 0.15);
+      // 걸음 방향이 바뀐 프레임에는 유지 시간을 무시하고 바로 클립을 바꾼다(다리는 이미 돌기 시작했다)
+      const force = this.gaitDirChanged;
+      this.gaitDirChanged = false;
+      const sideSfx = this.gaitDir === 'left' ? 'L' : this.gaitDir === 'right' ? 'R' : '';
+      if (sideSfx && this.actions['strafe' + sideSfx]) {
+        // 옆걸음: 느린 클립(2.8m/s)과 빠른 클립(5.5m/s) 중 속도에 가까운 것
+        const fast = 'strafeFast' + sideSfx;
+        const thr = Math.sqrt(cs.strafe * cs.strafeFast) * (this.currentAnim === fast ? 0.85 : 1.15);
+        const useFast = !!this.actions[fast] && gs > thr;
+        const nm = useFast ? fast : 'strafe' + sideSfx;
+        this.playAnim(nm, 0.15, force);
+        this.actions[nm].timeScale = ts(useFast ? cs.strafeFast : cs.strafe, 0.5, 1.6);
+      } else if (this.backpedal && this.actions.back) {
+        this.playAnim('back', 0.15, force);
         this.actions.back.timeScale = ts(cs.back, 0.5, 2.7);
       } else if (this.backpedal && this.actions.walk) {
         this.playAnim('walk', 0.15);
@@ -794,7 +816,7 @@ export class Bot implements Hittable, Healable {
           if (gs > thr * hyst) pick = cands[i + 1];
         }
         if (pick) {
-          this.playAnim(pick, 0.15);
+          this.playAnim(pick, 0.15, force);
           this.actions[pick].timeScale = ts(cs[pick], 0.5, pick === 'walk' ? 2.2 : 1.5);
         }
       }

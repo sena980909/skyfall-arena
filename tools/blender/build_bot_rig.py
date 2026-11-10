@@ -326,6 +326,13 @@ if MODE == 'player':
     GAITS['run'].update(v=5.5, n=16, beta=0.30)
     GAITS['back'].update(v=5.5, n=13, beta=0.36, lift=0.12)
     GAITS['sprint'] = dict(v=8.25, n=13, beta=0.25, lift=0.24, lean=0.26, dir=1, sway=0.010, yaw=0.14, hs=0.05, to=1.05, fx=0.065, ys=-0.07, crouch=0.05)
+# 옆걸음: 몸은 정면(+Y)을 본 채 발이 좌우(X)로 디딘다. side = +1 오른쪽(+X), -1 왼쪽으로 이동.
+# 보폭이 발 간격보다 커서 두 발이 엇갈리므로, 한 발은 앞줄·한 발은 뒷줄로 디뎌 다리가 서로 뚫지 않게 한다.
+# 느린 것(2.8m/s, 봇의 교전 옆걸음)과 빠른 것(5.5m/s, 주인공 기본 속도) 두 가지를 좌우로 만든다.
+STRAFE = dict(lean=0.0, dir=1, sway=0.0, yaw=0.0, hs=0.0, to=0.0, fx=0.13, ys=0.0)
+for _nm, _side in (('L', -1), ('R', 1)):
+    GAITS['strafe' + _nm] = dict(STRAFE, v=2.8, n=12, beta=0.42, lift=0.09, crouch=0.03, side=_side)
+    GAITS['strafeFast' + _nm] = dict(STRAFE, v=5.5, n=10, beta=0.30, lift=0.13, crouch=0.04, side=_side)
 for cfg in GAITS.values():
     cfg['T'] = cfg['n'] / FPS
     cfg['s'] = cfg['v'] * cfg['beta'] * cfg['T']
@@ -356,6 +363,11 @@ def foot_target(cfg, t, off, sx):
     if d < 0:
         pitch *= -0.5
         z *= 0.6
+    side = cfg.get('side', 0)
+    if side:
+        # 접지한 발은 몸이 가는 반대쪽으로 밀린다(전진 걸음의 y를 x로 옮긴 것). 발끝은 정면 그대로
+        lane = -sx * side * 0.075
+        return Vector((sx * cfg['fx'] + side * y, lane, ANKLE_H + z)), 0.0
     return Vector((sx * cfg['fx'], d * y + cfg['ys'], ANKLE_H + z)), pitch
 
 
@@ -367,7 +379,7 @@ def hip_heights(cfg):
         h = HIP_Z - cfg['crouch']
         for off, sx in ((0.0, -1), (0.5, 1)):
             a, _ = foot_target(cfg, t, off, sx)
-            reach = math.sqrt(max(1e-4, LEG_MAX ** 2 - a.y ** 2 - (abs(a.x) - HIP_X) ** 2))
+            reach = math.sqrt(max(1e-4, LEG_MAX ** 2 - a.y ** 2 - (a.x - sx * HIP_X) ** 2))
             h = min(h, a.z + reach)
         raw.append(h)
     for _ in range(2):  # 원형 평활화
@@ -409,7 +421,7 @@ def pose(clip, t):
         br = math.sin(t / 3.0 * math.tau)
         hipsX = Matrix.Translation((0.0, 0.0, -0.03 + 0.004 * br)) @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -0.03)
         feet = {'L': (Vector((-0.125, 0.06, ANKLE_H)), 0.0), 'R': (Vector((0.125, -0.06, ANKLE_H)), 0.0)}
-        lean, hyaw, bob = 0.03, -0.06, 0.003 * br
+        lean, hyaw, bob, roll = 0.03, -0.06, 0.003 * br, 0.0
     else:
         cfg = GAITS[clip]
         T = cfg['T']
@@ -423,13 +435,16 @@ def pose(clip, t):
         sway = -cfg['sway'] * math.cos(w - mid)
         hyaw = cfg['yaw'] * math.sin(w - mid) * cfg['dir']
         lean = cfg['lean']
+        # 옆걸음은 가는 쪽으로 몸을 살짝 기울인다
+        roll = cfg.get('side', 0) * 0.05
         hipsX = (Matrix.Translation((sway, 0.0, H - HIP_Z)) @ L.rot_about(HIPS_PIVOT, (0, 0, 1), hyaw)
-                 @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -lean))
+                 @ L.rot_about(HIPS_PIVOT, (1, 0, 0), -lean) @ L.rot_about(HIPS_PIVOT, (0, 1, 0), roll))
         feet = {'L': foot_target(cfg, t, 0.0, -1), 'R': foot_target(cfg, t, 0.5, 1)}
         bob = 0.006 * math.sin(2 * w)
     X['hips'] = hipsX
     # 상체는 골반 요를 상쇄하고 기울기를 일부만 따라간다. 팔·총·머리는 나머지 기울기도 상쇄해 수평 유지
-    torsoX = hipsX @ L.rot_about(TORSO_PIVOT, (0, 0, 1), -hyaw) @ L.rot_about(TORSO_PIVOT, (1, 0, 0), lean * 0.4)
+    torsoX = (hipsX @ L.rot_about(TORSO_PIVOT, (0, 0, 1), -hyaw) @ L.rot_about(TORSO_PIVOT, (1, 0, 0), lean * 0.4)
+              @ L.rot_about(TORSO_PIVOT, (0, 1, 0), -roll * 0.7))
     X['torso'] = torsoX
     rest_lean = lean * 0.6
     X['head'] = torsoX @ L.rot_about(NECK, (1, 0, 0), rest_lean * 0.85)
@@ -509,6 +524,10 @@ for clip in ('walk', 'run', 'back'):
     for q in (0, 1):
         shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (3.8, 0.2, 1.0))
 shot(f'{PFX}_run_front', 'run', GAITS['run']['T'] * 0.1, (1.6, 3.2, 1.3))
+for clip in ('strafeR', 'strafeFastR', 'strafeL'):
+    T = GAITS[clip]['T']
+    for q in range(4):
+        shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (0.4, 4.0, 1.0))
 if 'preview_only' in argv:
     print('PREVIEW_ONLY_DONE')
     sys.exit(0)
