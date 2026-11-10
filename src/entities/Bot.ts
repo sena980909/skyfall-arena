@@ -1,6 +1,6 @@
 import {
   AnimationAction, AnimationClip, AnimationMixer, Box3, BoxGeometry, BufferGeometry, CapsuleGeometry, Color,
-  Euler, Float32BufferAttribute, Group, Line, LineBasicMaterial, LoopOnce, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion,
+  Euler, Float32BufferAttribute, Group, Line, LineBasicMaterial, LoopOnce, LoopPingPong, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion,
   SkinnedMesh, SphereGeometry, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -113,9 +113,29 @@ export class Bot implements Hittable, Healable {
   private backpedal = false;
   /** 상체 비틀림(rad): 다리는 이동 방향, 상체는 조준 방향 */
   private torsoTwist = 0;
+  /** 상체가 바라보는 월드 요(rad). 다리 회전과 독립적으로 조준 방향을 각속도 제한으로 따라간다 */
+  private torsoYaw = 0;
+  private torsoInit = false;
   private spineBones: Object3D[] = [];
   private neckBone: Object3D | null = null;
   private ikR: { upper: Object3D; fore: Object3D; hand: Object3D } | null = null;
+  /**
+   * 절차적으로 회전을 덧붙이는 본(척추 비틀림·팔 IK)과 그 "클립 원본" 회전.
+   * 믹서가 일부 본(예: Spine)의 회전을 매 프레임 덮어쓰지 않아, 덧붙인 회전이 누적되며 상체가 빙글빙글 돌았다.
+   * 매 프레임 믹서 갱신 전에 원본으로 되돌리고, 갱신 후 다시 원본을 저장한 뒤에만 비틀림·IK를 적용한다.
+   */
+  private poseBones: Object3D[] | null = null;
+  private poseClean: Quaternion[] = [];
+  private readonly animWeights: Record<string, number> = {};
+  private animFade = 0.15;
+  /**
+   * 판정 떨림 방지용 유지 시간. 교전 중 AI가 옆걸음 방향을 자주 뒤집어 이동/정지·전진/뒷걸음 판정이
+   * 매 프레임 바뀌면 다리가 최대 속도로 계속 돌아 상체가 빙글빙글 도는 것처럼 보였다.
+   */
+  private moveHoldUntil = 0;
+  private backHoldUntil = 0;
+  private animHoldUntil = 0;
+  private legsYaw = 0;
   private facingYaw = 0;
   /** 손에 든 라이플의 총구 (모델 적용 시) */
   private rifleMuzzle: Object3D | null = null;
@@ -271,10 +291,13 @@ export class Bot implements Hittable, Healable {
         if (name === 'death') {
           a.setLoop(LoopOnce, 1);
           a.clampWhenFinished = true;
+        } else if (name === 'shoot') {
+          // 생성된 사격 클립은 끝과 시작 자세가 달라 루프마다 상체가 한 프레임에 크게 튄다 → 왕복 재생
+          a.setLoop(LoopPingPong, Infinity);
         }
         this.actions[name] = a;
       }
-      this.playAnim(this.actions.idle ? 'idle' : Object.keys(this.actions)[0]);
+      this.playAnim(this.actions.idle ? 'idle' : Object.keys(this.actions)[0], 0.15, true);
     }
   }
 
@@ -371,6 +394,27 @@ export class Bot implements Hittable, Healable {
     });
     this.spineBones = spine.sort((a, b) => depth(a) - depth(b));
     if (ru && rf && rh) this.ikR = { upper: ru, fore: rf, hand: rh };
+  }
+
+  /** 절차적 회전을 받는 본 목록(지연 생성: IK 본은 attachRifle에서 찾는다) */
+  private ensurePoseBones(): Object3D[] {
+    if (!this.poseBones) {
+      const list: Object3D[] = [...this.spineBones];
+      for (const b of [this.ikUpper, this.ikFore, this.ikHand, this.ikR?.upper, this.ikR?.fore, this.ikR?.hand]) if (b) list.push(b);
+      this.poseBones = list;
+      this.poseClean = list.map((b) => b.quaternion.clone());
+    }
+    return this.poseBones;
+  }
+
+  /** 믹서 갱신: 직전 프레임의 절차적 회전을 지우고(클립 원본 복원) 갱신한 뒤 새 원본을 저장 */
+  private updateMixer(dt: number): void {
+    if (!this.mixer) return;
+    const bones = this.ensurePoseBones();
+    for (let i = 0; i < bones.length; i++) bones[i].quaternion.copy(this.poseClean[i]);
+    this.updateAnimWeights(dt);
+    this.mixer.update(dt);
+    for (let i = 0; i < bones.length; i++) this.poseClean[i].copy(bones[i].quaternion);
   }
 
   /** 다리는 이동 방향, 상체는 조준 방향: 척추 본들에 비틀림을 나눠 적용 (믹서 갱신 직후 매 프레임) */
@@ -489,14 +533,52 @@ export class Bot implements Hittable, Healable {
     this.rifleKick *= 0.8;
   }
 
-  private playAnim(name: string, fade = 0.15): void {
+  /**
+   * 클립 전환. three.js 기본 fadeIn/fadeOut은 전환할 때마다 새 클립을 리셋해 가중치를 0부터 올리므로,
+   * 빠르게 오가면 활성 가중치 합이 1보다 작아지고 모자란 만큼 바인드 포즈가 섞여 상체가 휙 돌거나 고개가 꺾였다.
+   * 가중치를 직접 관리(updateAnimWeights)해 합이 항상 1이 되게 한다. 이미 섞이고 있는 클립은 시간도 리셋하지 않는다.
+   */
+  private playAnim(name: string, fade = 0.15, force = false): void {
     if (!this.mixer || this.currentAnim === name) return;
     const next = this.actions[name];
     if (!next) return;
-    const prev = this.actions[this.currentAnim];
-    next.reset().fadeIn(fade).play();
-    if (prev) prev.fadeOut(fade);
+    const now = this.ctx.now;
+    // 최소 0.2초는 같은 클립 유지 (사망 등 강제 전환 제외)
+    if (!force && now < this.animHoldUntil) return;
+    this.animHoldUntil = now + 0.2;
+    if ((this.animWeights[name] ?? 0) < 0.01) next.reset();
+    next.enabled = true;
+    next.play();
+    this.animFade = Math.max(0.05, fade);
     this.currentAnim = name;
+  }
+
+  /** 현재 클립 쪽으로 가중치를 선형 이동한 뒤 합이 1이 되도록 정규화 */
+  private updateAnimWeights(dt: number): void {
+    const step = dt / this.animFade;
+    let sum = 0;
+    for (const n of Object.keys(this.actions)) {
+      const target = n === this.currentAnim ? 1 : 0;
+      let w = this.animWeights[n] ?? 0;
+      w = target > w ? Math.min(target, w + step) : Math.max(target, w - step);
+      this.animWeights[n] = w;
+      sum += w;
+    }
+    if (sum <= 0) {
+      this.animWeights[this.currentAnim] = 1;
+      sum = 1;
+    }
+    for (const [n, a] of Object.entries(this.actions)) {
+      const w = (this.animWeights[n] ?? 0) / sum;
+      if (w > 0) {
+        if (!a.isRunning() && !a.paused) a.play();
+        a.enabled = true;
+        a.setEffectiveWeight(w);
+      } else if (a.isRunning()) {
+        a.setEffectiveWeight(0);
+        a.stop();
+      }
+    }
   }
 
   /**
@@ -511,11 +593,15 @@ export class Bot implements Hittable, Healable {
     const now = this.ctx.now;
     this.velocity.copy(this.ctrl.pos).sub(this.lastPos).divideScalar(Math.max(dt, 1e-4));
     this.lastPos.copy(this.ctrl.pos);
-    const k = Math.min(1, dt * 10);
+    const k = Math.min(1, dt * 6);
     this.smoothVel.x += (this.velocity.x - this.smoothVel.x) * k;
     this.smoothVel.z += (this.velocity.z - this.smoothVel.z) * k;
     const speed = Math.hypot(this.smoothVel.x, this.smoothVel.z);
-    this.moving = speed > (this.moving ? 0.35 : 0.7);
+    const wantMoving = speed > (this.moving ? 0.35 : 0.7);
+    if (wantMoving !== this.moving && now >= this.moveHoldUntil) {
+      this.moving = wantMoving;
+      this.moveHoldUntil = now + 0.25;
+    }
     const shooting = now < this.shootUntil;
     const engaged = this.canSee || shooting || (this.state === 'combat' && this.mode === 'hiding');
     const wrap = (a: number): number => {
@@ -524,24 +610,44 @@ export class Bot implements Hittable, Healable {
       return a;
     };
 
-    // 다리 방향
+    // 다리 방향: 충분히 빠를 때만 이동 방향을 갱신(느리면 속도 방향이 흔들린다). 교전 중 느린 이동은 조준 방향 유지
     const aimYaw = yawOf(this.aimDir);
-    let legsYaw = aimYaw;
+    if (!this.torsoInit) this.legsYaw = this.facingYaw;
     if (this.moving) {
       const moveYaw = Math.atan2(this.smoothVel.x, this.smoothVel.z);
-      if (engaged) {
-        const rel = Math.abs(wrap(moveYaw - aimYaw));
-        // 히스테리시스: 110° 넘으면 뒷걸음, 80° 아래로 오면 해제
-        if (this.backpedal ? rel < 1.4 : rel > 1.92) this.backpedal = !this.backpedal;
-      } else this.backpedal = false;
-      legsYaw = this.backpedal ? moveYaw + Math.PI : moveYaw;
-    } else this.backpedal = false;
-    const maxTurn = 9 * dt; // ≈ 515°/s
-    this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, wrap(legsYaw - this.facingYaw)));
+      if (engaged && speed < 1.2) {
+        this.legsYaw = aimYaw;
+      } else if (speed > 0.9) {
+        let back = false;
+        if (engaged) {
+          const rel = Math.abs(wrap(moveYaw - aimYaw));
+          // 히스테리시스(110°/80°) + 최소 0.5초 유지
+          back = this.backpedal ? rel > 1.4 : rel > 1.92;
+        }
+        if (back !== this.backpedal && now >= this.backHoldUntil) {
+          this.backpedal = back;
+          this.backHoldUntil = now + 0.5;
+        }
+        this.legsYaw = this.backpedal ? moveYaw + Math.PI : moveYaw;
+      }
+    } else {
+      this.legsYaw = aimYaw;
+      if (now >= this.backHoldUntil) this.backpedal = false;
+    }
+    const maxTurn = 7 * dt; // ≈ 400°/s
+    this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, wrap(this.legsYaw - this.facingYaw)));
     this.group.rotation.y = this.facingYaw;
-    // 상체 비틀림: 교전 중에만 조준 방향으로
-    const twistTarget = engaged ? Math.max(-1.9, Math.min(1.9, wrap(aimYaw - this.facingYaw))) : 0;
-    this.torsoTwist += (twistTarget - this.torsoTwist) * Math.min(1, dt * 12);
+    // 상체: 월드 기준 요를 따로 두고 교전 중엔 조준 방향, 아니면 다리 방향을 각속도 제한(≈570°/s)으로 따라간다.
+    // 비틀림 = 상체 요 − 다리 요 → 다리가 휙 돌아도 상체는 조준을 유지한다.
+    if (!this.torsoInit) { this.torsoYaw = this.facingYaw; this.torsoInit = true; }
+    const torsoTarget = engaged ? aimYaw : this.facingYaw;
+    const maxTorso = 10 * dt;
+    this.torsoYaw = wrap(this.torsoYaw + Math.max(-maxTorso, Math.min(maxTorso, wrap(torsoTarget - this.torsoYaw))));
+    // 비틀림은 연속값으로 갱신(±180°에서 다시 감싸면 부호가 뒤집혀 상체가 한 프레임에 200°+ 튄다).
+    // 한계(±109°)를 넘으면 상체가 다리에 끌려가도록 상체 요도 함께 맞춘다.
+    const rawTwist = this.torsoTwist + wrap(this.torsoYaw - this.facingYaw - this.torsoTwist);
+    this.torsoTwist = Math.max(-1.9, Math.min(1.9, rawTwist));
+    if (this.torsoTwist !== rawTwist) this.torsoYaw = wrap(this.facingYaw + this.torsoTwist);
 
     if (!this.moving) {
       // 생성된 aim 클립은 재생 중 상체가 130° 이상 돌아가(등을 보임) 쓰지 않는다. 정지 사격·조준 대기 모두 shoot 클립(40° 블레이드 자세) 사용
@@ -573,7 +679,7 @@ export class Bot implements Hittable, Healable {
         this.actions.run.timeScale = ts(CLIP_SPEED.run, 0.4, 1.4);
       }
     }
-    this.mixer.update(dt);
+    this.updateMixer(dt);
     this.applyTorsoTwist();
     this.group.updateMatrixWorld(true);
     this.applyArmorBulk();
@@ -663,7 +769,7 @@ export class Bot implements Hittable, Healable {
     this.fallTwist = (headshot ? 0.5 : 0.25) * (Math.random() < 0.5 ? -1 : 1);
     this.fallT = 0;
     // 중립 자세로 짧게 블렌드(달리기 중 사망 시 팔다리가 벌어진 채 굳지 않게)
-    if (this.mixer && this.actions.idle) this.playAnim('idle', 0.12);
+    if (this.mixer && this.actions.idle) this.playAnim('idle', 0.12, true);
     this.ctx.onBotKilled(this, headshot);
   }
 
@@ -684,7 +790,7 @@ export class Bot implements Hittable, Healable {
     // 넘어지며 발이 바닥에 붙은 채 몸이 내려가도록 약간 가라앉힘
     this.group.position.y = this.ctrl.pos.y - 0.06 * k;
     if (this.mixer && this.fallT < 0.3) {
-      this.mixer.update(dt);
+      this.updateMixer(dt);
       this.applyArmorBulk();
     }
     if (this.fallT >= Bot.FALL_DUR + Bot.LIE_DUR) {
