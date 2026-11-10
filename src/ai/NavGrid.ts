@@ -27,7 +27,8 @@ export class NavGrid {
   private readonly cameBuf: Int32Array;
   private readonly closedBuf: Uint8Array;
 
-  constructor(map: GreyboxMap, agentRadius = 0.45) {
+  /** seed = 도달 가능 영역을 재는 출발점(관문이 닫혀 있으면 남쪽과 북쪽이 끊긴다: 플레이어가 있는 쪽을 준다) */
+  constructor(map: GreyboxMap, seed: Vector3 = map.playerSpawn, agentRadius = 0.45) {
     this.ox = map.bounds.min.x;
     this.oz = map.bounds.min.z;
     this.w = Math.ceil((map.bounds.max.x - map.bounds.min.x) / this.cell);
@@ -51,7 +52,7 @@ export class NavGrid {
     this.cameBuf = new Int32Array(n);
     this.closedBuf = new Uint8Array(n);
     this.reachable = new Uint8Array(n);
-    this.floodReachable(map.playerSpawn);
+    this.floodReachable(seed);
     for (let idx = 0; idx < n; idx++) if (this.reachable[idx]) this.walkable.push(idx);
   }
 

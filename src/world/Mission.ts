@@ -45,12 +45,15 @@ interface MissionHooks {
   setGate(open: boolean): void;
 }
 
-/** 임무 '탈출'의 수치. 남쪽 아레나 → 관문 → 화물 통로 → 북쪽 야드 → 관제동(실내: 중계기·자료 전송·전원 셀) → 야드 → (탈출) 다시 남쪽 착륙장 */
-/** 중계기 1·2는 남쪽 아레나, 3은 관제동 맨 안쪽의 관제실. 두 기를 복구하면 관문이 열린다 */
+/** 임무 '탈출'의 수치. 안에서 밖으로: 관제동(실내, 시작) → 북쪽 야드 → 화물 통로 → 관문 → 남쪽 착륙장 */
+/** 임무 시작 자리: 관제동 맨 안쪽 관제실, 보안 단말 앞(북쪽을 본다) */
+export const MISSION_START = new Vector3(0, 0, -158.5);
+/** 단말 셋. 0·1 = 남쪽 착륙장의 유도등(마지막에 켠다), 2 = 관제실의 보안 단말(맨 처음 봉쇄를 푼다) */
 const RELAY_SPOTS = [new Vector3(-32, 0, 18), new Vector3(32, 0, -18), new Vector3(0, 0, -162)];
-/** 관제동에 들어서면 방 안에서 기다리던 적이 나온다(서쪽 방, 동쪽 방, 관제실) */
-const BLOCK_AMBUSH = [new Vector3(-15, 0, -149), new Vector3(17, 0, -145), new Vector3(-18, 0, -162)];
-const GATE_AFTER = 2;
+/** 시작할 때 관제동에 흩어져 있는 경비병(아직 플레이어를 못 봤다): 서쪽 방, 동쪽 방, 로비. 보안 단말에 손대면 몰려온다 */
+const START_GUARDS = [new Vector3(-15, 0, -147), new Vector3(17, 0, -143), new Vector3(8, 0, -127)];
+/** 관문이 열릴 때 착륙장 쪽에서 통로를 겨누는 저격병 */
+const GATE_MARKSMAN = new Vector3(4, 0, -13);
 const BEACON_POS = new Vector3(0, 0, -95);
 const YARD_CHECKPOINT = new Vector3(0, 0, -89);
 const EXTRACT_POS = new Vector3(0, 0, 26);
@@ -58,9 +61,9 @@ const INTERACT_RADIUS = 2.6;
 const RELAY_HOLD = 2.5;
 const BEACON_HOLD = 2.0;
 const DEFEND_SECONDS = 60;
-const DEFEND_WAVE_EVERY = 10;
-const DEFEND_MAX_ALIVE = 4;
-const EXTRACT_SECONDS = 55;
+const DEFEND_WAVE_EVERY = 12;
+const DEFEND_MAX_ALIVE = 3;
+const EXTRACT_SECONDS = 45;
 const EXTRACT_RADIUS = 3;
 /** 자료 전송(거점 유지): 관제동 서버실 안. 플레이어가 안에 있고 살아 있는 적이 안에 없을 때만 진행된다 */
 const UPLOAD_CENTER = new Vector3(0, 0, -145);
@@ -68,8 +71,8 @@ const UPLOAD_HALF_X = 8.0;
 const UPLOAD_Z0 = -153.0;
 const UPLOAD_Z1 = -137.0;
 const UPLOAD_SECONDS = 35;
-const UPLOAD_WAVE_EVERY = 8;
-const UPLOAD_MAX_ALIVE = 4;
+const UPLOAD_WAVE_EVERY = 10;
+const UPLOAD_MAX_ALIVE = 3;
 const TERMINAL_POS = new Vector3(-2.6, 0, -152.3);
 /** 전원 셀 운반: 전송이 끝나면 셀 둘(서버실, 화물 통로)을 신호기로 옮긴다. 들고 있는 동안은 달릴 수 없고, 죽으면 그 자리에 떨어진다 */
 const CELL_SPOTS: { pos: Vector3; where: string }[] = [
@@ -82,8 +85,7 @@ const CELL_GUARDS = [new Vector3(-20, 0, -128), new Vector3(20, 0, -128)];
 /** 돌입병: 멀리서 쏘지 않고 3~6m까지 파고든다(서버실 거점을 실제로 빼앗으러 들어온다). 저격병: 멀리서 조준선을 비추고 한 발 */
 const RUSH: BotOptions = { kind: 'rusher' };
 const MARKSMAN: BotOptions = { kind: 'marksman' };
-/** 통로에 들어설 때 통로 북쪽 끝에서 내려다보는 저격병, 셀을 들고 야드로 나설 때 야드 남쪽 끝의 저격병 */
-const CORRIDOR_MARKSMAN = new Vector3(2, 0, -68);
+/** 셀을 들고 야드로 나설 때 야드 남쪽 끝의 저격병 */
 const YARD_MARKSMAN = new Vector3(-14, 0, -76);
 const AMBER = 0xffb030;
 const HEAVY: BotOptions = { hpMult: 1.8, scale: 1.15 };
@@ -101,13 +103,23 @@ function inUploadRoom(v: Vector3): boolean {
   return Math.abs(v.x) < UPLOAD_HALF_X && v.z > UPLOAD_Z0 && v.z < UPLOAD_Z1 && v.y < 3;
 }
 
+/** 무전 화자 */
+const HQ = '등대';
+const SHIP = '제비';
+const ME = '레이븐';
+
 /**
- * 임무 진행 관리 — 옵치 스토리 임무처럼 목표를 차례로 수행하고 탈출한다.
- *   아레나의 중계기 2기 복구(F 유지, 손대면 매복) → 관문 개방 → 화물 통로 돌파 → 야드를 지나 관제동(실내)의 관제실에서 중계기 복구
- *   → 서버실에서 자료 전송(거점 유지: 적이 방 안에 있으면 멈춘다) → 전원 셀을 야드의 신호기까지 운반(달리기 불가, 죽으면 떨어뜨린다)
- *   → 신호기로 탈출선 호출
- *   → 60초 방어 → 추적자(보스) 처치 → 55초 안에 통로를 되돌아가 남쪽 착륙장의 탈출 지점 도달
- * 죽으면 마지막으로 달성한 목표 지점(체크포인트)에서 부활하고 진행 상황은 유지된다. 목숨은 게임 전체에서 센다.
+ * 임무 '탈출' — 실내에서 시작해 밖으로 빠져나간다. 부활은 없다(쓰러지면 임무 실패).
+ *
+ * 이야기: 공중 화물 기지 스카이독을 장악한 아르고스 보안군이 화물 항로를 조작해 물자를 빼돌리고 있다.
+ * 정찰 요원 레이븐은 증거(항로 기록)를 찾아 관제동에 잠입했지만 경보가 울렸다. 본부 '등대'의 안내로 기록을 전송하고,
+ * 탈출선 '제비'를 불러 착륙장에서 빠져나간다.
+ *
+ *   관제실: 보안 단말로 봉쇄 해제(F 유지, 경비병이 몰려온다)
+ *   → 서버실: 항로 기록 전송(거점 유지: 적이 방 안에 있으면 멈춘다)
+ *   → 전원 셀 2개(서버실, 화물 통로)를 야드의 신호기로 운반(달리기 불가)
+ *   → 신호기로 제비 호출 → 60초 방어 → 추적자(보스) 처치 → 남쪽 관문 개방
+ *   → 착륙장: 유도등 2기 점등(F 유지) → 45초 안에 탈출 지점 도달
  */
 export class Mission {
   stage: MissionStage = 'idle';
@@ -124,10 +136,11 @@ export class Mission {
   private readonly deadAt = new Map<Bot, number>();
   private boss: Bot | null = null;
   private lastSpawnIdx = -1;
-  /** 통로 매복을 이미 터뜨렸는가 */
-  private corridorSprung = false;
-  /** 관제동 매복을 이미 터뜨렸는가 */
-  private blockSprung = false;
+  /** 단말 단계가 두 번 있다: 0 = 관제실 보안 단말(시작), 1 = 착륙장 유도등(끝). openRelays = 지금 손댈 수 있는 단말 */
+  private relayStep: 0 | 1 = 0;
+  private openRelays: Relay[] = [];
+  /** 한 번만 나오는 무전을 이미 했는가 */
+  private readonly said = new Set<string>();
   /** 서버실 거점 표시(바닥 테두리 + 전송 단말) */
   private readonly uplink = new Group();
   private uplinkEdge: MeshStandardMaterial | null = null;
@@ -346,10 +359,11 @@ export class Mission {
     this.boss = null;
     this.botCounter = 0;
     this.waveCount = 0;
-    this.checkpoint.copy(this.ctx.map.playerSpawn);
+    this.checkpoint.copy(MISSION_START);
     this.hooks.setGate(false);
-    this.corridorSprung = false;
-    this.blockSprung = false;
+    this.relayStep = 0;
+    this.openRelays = [this.relays[2]];
+    this.said.clear();
     this.uploadProgress = 0;
     this.uploadStarted = false;
     this.uplinkLight?.emissive.setHex(RED);
@@ -364,17 +378,30 @@ export class Mission {
     this.stage = 'relays';
     this.ctx.hud.setBoss(null);
     this.ctx.hud.setRest('');
-    this.ctx.hud.killFeed('임무 시작 — 중계기 3기를 복구하라', 'hs');
     this.ctx.sfx.waveStart();
-    this.queue(3, 0.8);
+    // 경비병은 다른 방에서 순찰 중이다. 보안 단말에 손대기 전에는 플레이어 위치를 모른다
+    for (const pos of START_GUARDS) {
+      this.botCounter++;
+      this.spawn(`경비병 ${this.botCounter}`, {}, pos, false);
+    }
+    const hud = this.ctx.hud;
+    hud.comm(HQ, '레이븐, 경보가 울렸다. 아르고스가 네 위치를 안다. 잠입은 여기까지야.');
+    hud.comm(HQ, '지금부터는 탈출이다. 눈앞의 보안 단말로 관제동 봉쇄부터 풀어. F를 길게 눌러.');
+  }
+
+  /** 같은 무전을 두 번 하지 않는다 */
+  private sayOnce(key: string, who: string, text: string): void {
+    if (this.said.has(key)) return;
+    this.said.add(key);
+    this.ctx.hud.comm(who, text);
   }
 
   // ---------- 적 등장 ----------
 
   private pickSpawn(): Vector3 {
-    // 관문이 닫혀 있으면 아레나 지점만, 열리면 야드와 관제동 지점도 쓴다. 너무 먼 지점(75m 밖)은 빼서 적이 금방 도착하게 한다
+    // 관문이 닫혀 있는 동안은 북쪽(야드·관제동) 지점만, 열리면 남쪽 착륙장 지점도 쓴다. 너무 먼 지점(75m 밖)은 빼서 적이 금방 도착하게 한다
     const map = this.ctx.map;
-    const spawns = map.gateOpen ? [...map.botSpawns, ...map.yardSpawns, ...map.blockSpawns] : map.botSpawns;
+    const spawns = map.gateOpen ? [...map.botSpawns, ...map.yardSpawns, ...map.blockSpawns] : [...map.yardSpawns, ...map.blockSpawns];
     const p = this.ctx.player.position;
     const far = spawns.map((s, i) => ({ s, i, d: s.distanceTo(p) })).filter((c) => c.d >= 22 && c.d <= 75 && c.i !== this.lastSpawnIdx);
     const pool = far.length ? far : spawns.map((s, i) => ({ s, i, d: 0 }));
@@ -422,13 +449,13 @@ export class Mission {
     return this.ctx.bots.filter((b) => b.alive && b.def.kind === 'marksman').length + this.spawnQueue.filter((s) => s.opts.kind === 'marksman').length;
   }
 
-  private spawn(name: string, opts: BotOptions, pos?: Vector3): Bot {
+  private spawn(name: string, opts: BotOptions, pos?: Vector3, alert = true): Bot {
     const bot = new Bot(this.ctx, name, pos ? pos.clone() : this.pickSpawn(), opts);
     this.ctx.bots.push(bot);
     this.ctx.scene.add(bot.group, bot.debugLine);
     bot.setDebug(this.ctx.debug);
-    // 등장하자마자 플레이어 쪽으로 오게 한다(임무에서는 적이 목표 지점으로 몰려와야 한다)
-    bot.hear(this.ctx.player.position);
+    // 등장하자마자 플레이어 쪽으로 오게 한다(임무에서는 적이 목표 지점으로 몰려와야 한다). alert가 false면 순찰하다가 보면 싸운다
+    if (alert) bot.hear(this.ctx.player.position);
     return bot;
   }
 
@@ -466,7 +493,7 @@ export class Mission {
     const p = this.ctx.player.position;
     let best: Relay | null = null;
     let bd = Infinity;
-    for (const r of this.relays) {
+    for (const r of this.openRelays) {
       if (r.done) continue;
       const d = r.pos.distanceTo(p);
       if (d < bd) {
@@ -538,55 +565,52 @@ export class Mission {
     this.relays[2].group.visible = north;
 
     if (this.stage === 'relays') {
+      const lights = this.relayStep === 1;
       const r = this.nearestOpenRelay();
+      const doneNow = this.openRelays.filter((x) => x.done).length;
       if (r) {
-        const res = this.hold(r.pos, r.progress, RELAY_HOLD, dt, '중계기 복구');
+        const res = this.hold(r.pos, r.progress, RELAY_HOLD, dt, lights ? '유도등 점등' : '봉쇄 해제');
         r.progress = res.progress;
         if (r.progress > 0 && !r.ambushed) {
-          // 손대는 순간 매복이 온다. 뒤로 갈수록 많아진다
           r.ambushed = true;
-          const done = this.relaysDone;
-          this.queue(2, 0.4, done >= 2 ? 1 : 0);
-          if (done === 1) this.queueOne(1.4, RUSH);
-          hud.killFeed('매복! 적이 접근한다', 'death');
+          if (lights) {
+            // 유도등에 손대면 착륙장 수비대가 온다. 두 번째에는 돌입병이 섞인다
+            this.queue(doneNow === 0 ? 2 : 1, 0.4);
+            if (doneNow === 1) this.queueOne(1.2, RUSH);
+            hud.killFeed('착륙장 수비대 접근', 'death');
+          } else {
+            // 보안 단말에 손대면 순찰하던 경비병이 위치를 알고 몰려온다(새로 나오지는 않는다)
+            for (const b of ctx.bots) if (b.alive) b.hear(ctx.player.position);
+            hud.killFeed('경보 — 경비병이 관제실로 온다', 'death');
+          }
         }
         if (r.progress >= 1) {
           r.done = true;
           r.light.emissive.setHex(CYAN);
           this.checkpoint.copy(r.pos);
-          this.hooks.onScore(MISSION_SCORE.relay, `중계기 복구 ${this.relaysDone} / ${this.relays.length}`);
-          if (this.relaysDone === GATE_AFTER && !ctx.map.gateOpen) {
-            this.hooks.setGate(true);
-            hud.killFeed('북쪽 관문 개방 — 통로와 야드를 지나 관제동의 마지막 중계기로', 'hs');
-          }
+          const n = doneNow + 1;
+          this.hooks.onScore(MISSION_SCORE.relay, lights ? `유도등 점등 ${n} / ${this.openRelays.length}` : '봉쇄 해제');
+          if (lights && n < this.openRelays.length) hud.comm(SHIP, '하나 확인. 나머지 하나도 켜 줘.');
           ctx.sfx.waveClear();
         }
         markPos = r.pos;
-        markLabel = '중계기';
+        markLabel = lights ? '유도등' : '보안 단말';
       }
-      // 통로에 들어서면 매복이 터진다(한 번)
-      if (ctx.map.gateOpen && !this.corridorSprung && ctx.player.position.z < -36) {
-        this.corridorSprung = true;
-        this.queue(2, 0.2);
-        this.queueOne(0.2, MARKSMAN, CORRIDOR_MARKSMAN);
-        hud.killFeed('통로 매복! 끝에 저격병 — 조준선이 보이면 엄폐하라', 'death');
-      }
-      // 관제동에 들어서면 방 안에서 기다리던 적이 나온다(한 번)
-      if (ctx.map.gateOpen && !this.blockSprung && ctx.player.position.z < -124) {
-        this.blockSprung = true;
-        BLOCK_AMBUSH.forEach((pos, i) => {
-          this.botCounter++;
-          this.spawnQueue.push({ at: now + 0.2 + i * 0.3, name: `경비병 ${this.botCounter}`, opts: i === 2 ? HEAVY : {}, pos });
-        });
-        this.spawnQueue.sort((a, b) => a.at - b.at);
-        hud.killFeed('관제동 내부에 적 — 관제실은 양옆 방으로 돌아 들어간다', 'death');
-      }
-      hud.setObjective(`목표: 중계기 복구 ${this.relaysDone} / ${this.relays.length}`,
-        `${ctx.map.gateOpen ? '관제동 관제실 · ' : ''}남은 적 ${this.aliveBots}`);
+      if (lights) hud.setObjective(`목표: 착륙 유도등 켜기 ${doneNow} / ${this.openRelays.length}`, `남쪽 착륙장 · 남은 적 ${this.aliveBots}`);
+      else hud.setObjective('목표: 관제동 봉쇄 해제', `관제실 보안 단말 · 남은 적 ${this.aliveBots}`);
       hud.setRest('');
-      if (this.relaysDone === this.relays.length) {
-        this.stage = 'upload';
-        hud.killFeed('통신 복구 — 서버실에서 탈출 항로 자료를 전송하라', 'hs');
+      if (this.openRelays.every((x) => x.done)) {
+        if (lights) {
+          this.stage = 'extract';
+          this.timerEnd = now + EXTRACT_SECONDS;
+          this.zone.visible = true;
+          this.queue(2, 1.0);
+          hud.comm(SHIP, `유도등 확인, 내려간다. ${EXTRACT_SECONDS}초 안에 타!`);
+          ctx.sfx.waveStart();
+        } else {
+          this.stage = 'upload';
+          hud.comm(HQ, '봉쇄 해제 확인. 서버실로 가서 항로 기록을 전송해. 놈들이 화물을 빼돌린 증거다.');
+        }
       }
     } else if (this.stage === 'upload') {
       const p = ctx.player;
@@ -597,22 +621,23 @@ export class Mission {
         this.uploadStarted = true;
         this.nextWaveAt = now + 2.5;
         this.waveCount = 0;
-        hud.killFeed('전송 시작 — 적이 서버실에 들어오면 전송이 멈춘다', 'death');
+        hud.comm(HQ, '전송 시작. 놈들이 방 안에 들어오면 회선이 끊긴다. 방을 지켜.');
         ctx.sfx.waveStart();
       }
       if (inside && hostiles === 0) this.uploadProgress = Math.min(1, this.uploadProgress + dt / UPLOAD_SECONDS);
+      if (this.uploadProgress >= 0.5) this.sayOnce('half', HQ, '절반 넘었다. 조금만 더 버텨.');
       // 다음 적은 플레이어가 서버실 안에 있는 동안에만 다가온다(죽어서 돌아오는 사이에 적이 쌓이지 않게)
       if (!inside) this.nextWaveAt += dt;
       if (this.uploadStarted && now >= this.nextWaveAt) {
         this.nextWaveAt = now + UPLOAD_WAVE_EVERY;
         this.waveCount++;
-        const n = Math.min(2, UPLOAD_MAX_ALIVE - this.aliveBots);
+        // 무리 = 돌입병 하나 + 돌격병 하나(홀수 번째 무리는 돌입병만). 부활이 없으므로 한꺼번에 몰리지 않게 한다
+        const n = Math.min(this.waveCount % 2 === 0 ? 2 : 1, UPLOAD_MAX_ALIVE - this.aliveBots);
         for (let i = 0; i < n; i++) {
           this.botCounter++;
-          const heavy = i === 1 && this.waveCount % 3 === 0;
           this.spawnQueue.push({
-            at: now + 0.2 + i * 0.5, name: `${heavy ? '중장병' : i === 0 ? '돌입병' : '돌격병'} ${this.botCounter}`,
-            opts: heavy ? HEAVY : i === 0 ? RUSH : {}, pos: this.pickBlockSpawn(),
+            at: now + 0.2 + i * 0.5, name: `${i === 0 ? '돌입병' : '돌격병'} ${this.botCounter}`,
+            opts: i === 0 ? RUSH : {}, pos: this.pickBlockSpawn(),
           });
         }
         this.spawnQueue.sort((a, b) => a.at - b.at);
@@ -637,8 +662,9 @@ export class Mission {
         }
         this.checkpoint.copy(UPLOAD_CENTER);
         this.stage = 'carry';
-        this.hooks.onScore(MISSION_SCORE.upload, '자료 전송 완료');
-        hud.killFeed('신호기에 전원이 없다 — 전원 셀 2개(서버실 · 화물 통로)를 야드 신호기로 운반하라', 'hs');
+        this.hooks.onScore(MISSION_SCORE.upload, '항로 기록 전송 완료');
+        hud.comm(HQ, '기록 확보! 이제 널 빼낼 차례다. 그런데 야드의 신호기에 전원이 없어.');
+        hud.comm(HQ, '단말 앞의 전원 셀을 들고 야드로 나와. 셀을 들고는 뛸 수 없다.');
         ctx.sfx.waveClear();
       }
     } else if (this.stage === 'carry') {
@@ -653,9 +679,9 @@ export class Mission {
           if (p.ctrl.onGround) c.ground.copy(p.position);
           if (!this.carrySprung && c === this.cells[0] && p.position.z > -120) {
             this.carrySprung = true;
-            this.queue(2, 0.2);
+            this.queue(1, 0.2);
             this.queueOne(0.2, MARKSMAN, YARD_MARKSMAN);
-            hud.killFeed('야드에 차단조와 저격병 — 셀을 든 채로는 달릴 수 없다', 'death');
+            hud.comm(HQ, '야드에 저격병이다. 조준선이 보이면 옆으로 움직이거나 엄폐물 뒤에 앉아.');
           }
           const d = this.tmp.copy(p.position).sub(BEACON_POS);
           if (Math.hypot(d.x, d.z) <= INTERACT_RADIUS && Math.abs(d.y) < 2.5) {
@@ -666,11 +692,11 @@ export class Mission {
             this.hooks.onScore(MISSION_SCORE.cell, `전원 셀 장착 ${n} / ${this.cells.length}`);
             ctx.sfx.waveClear();
             const rest = this.nearestCell();
-            if (rest) hud.killFeed(`하나 더 — 남은 전원 셀은 ${rest.where}에 있다`, 'hs');
+            if (rest) hud.comm(HQ, `하나로는 부족하다. ${rest.where}에 예비 셀이 있어.`);
             else {
               this.beaconLight?.emissive.setHex(AMBER);
               this.stage = 'beacon';
-              hud.killFeed('전원 연결 — 신호기로 탈출선을 호출하라', 'hs');
+              hud.comm(HQ, '전원 들어왔다. 신호기를 켜서 제비를 불러.');
             }
           }
         }
@@ -690,11 +716,12 @@ export class Mission {
                 this.spawnQueue.push({ at: now + 0.6 + i * 0.4, name: `경비병 ${this.botCounter}`, opts: {}, pos });
               });
               this.spawnQueue.sort((a, b) => a.at - b.at);
+              hud.killFeed('전원 셀 확보 — 로비에 경비병', 'death');
             } else {
-              this.queue(2, 0.3);
+              this.queue(1, 0.3);
               this.queueOne(1.3, RUSH);
+              hud.comm(ME, '두 번째 셀 확보. 신호기로 돌아간다.');
             }
-            hud.killFeed('전원 셀 확보 — 야드 신호기로. 들고 있는 동안은 달릴 수 없다', k === this.cells[0] ? 'hs' : 'death');
           }
           break;
         }
@@ -727,7 +754,7 @@ export class Mission {
         this.timerEnd = now + DEFEND_SECONDS;
         this.nextWaveAt = now + 1;
         this.hooks.onScore(MISSION_SCORE.beacon, '탈출선 호출');
-        hud.killFeed(`탈출선 도착까지 ${DEFEND_SECONDS}초 — 버텨라`, 'death');
+        hud.comm(SHIP, `여기는 제비. 스카이독으로 간다. ${DEFEND_SECONDS}초만 버텨라.`);
         ctx.sfx.waveStart();
       }
     } else if (this.stage === 'defend') {
@@ -743,14 +770,15 @@ export class Mission {
           if (special) this.queueOne(0.7, special);
         }
       }
+      if (this.timeLeft <= 30) this.sayOnce('eta', SHIP, '진입 중이다. 30초.');
       hud.setObjective('목표: 탈출선이 올 때까지 방어', `남은 적 ${this.aliveBots}`);
       hud.setRest(`탈출선 도착까지 ${Math.ceil(this.timeLeft)}초`);
       if (now >= this.timerEnd) {
         this.stage = 'boss';
         this.hooks.onScore(MISSION_SCORE.defend, '방어 성공');
         this.spawnQueue.push({ at: now + 0.8, name: '추적자', opts: BOSS });
-        this.queue(2, 1.4);
-        hud.killFeed('추적자 출현 — 처치해야 탈출할 수 있다', 'death');
+        this.queue(1, 1.4);
+        hud.comm(HQ, '큰 놈이 온다. 아르고스의 추적자다. 저놈이 살아 있으면 제비가 못 내려.');
         ctx.sfx.waveStart();
       }
     } else if (this.stage === 'boss') {
@@ -760,12 +788,16 @@ export class Mission {
         hud.setBoss(this.boss.alive ? { name: this.boss.displayName, hp: this.boss.hp, max: this.boss.maxHp } : null);
         if (!this.boss.alive) {
           this.boss = null;
-          this.stage = 'extract';
-          this.timerEnd = now + EXTRACT_SECONDS;
-          this.zone.visible = true;
+          // 추적자의 인증키로 남쪽 관문이 열린다. 착륙장에서 유도등 둘을 켜야 제비가 내린다
+          this.hooks.setGate(true);
+          this.relayStep = 1;
+          this.openRelays = [this.relays[0], this.relays[1]];
+          this.stage = 'relays';
           this.checkpoint.copy(YARD_CHECKPOINT);
-          this.queue(2, 1.0);
-          hud.killFeed(`탈출선 도착 — ${EXTRACT_SECONDS}초 안에 통로를 지나 남쪽 착륙장으로`, 'hs');
+          this.queue(1, 1.0);
+          this.queueOne(0.6, MARKSMAN, GATE_MARKSMAN);
+          hud.comm(HQ, '추적자 제압. 놈의 인증키로 남쪽 관문을 열었다. 통로를 지나 착륙장으로.');
+          hud.comm(SHIP, '착륙장 유도등이 꺼져 있다. 두 기 다 켜 줘. 관문 너머에 저격병이 있다.');
           ctx.sfx.waveClear();
         }
       }
@@ -790,7 +822,7 @@ export class Mission {
         this.zone.visible = false;
         hud.setRest('');
         hud.setObjectiveMarker(null, ctx.camera);
-        this.hooks.onDefeat('탈출선을 놓쳤다');
+        this.hooks.onDefeat('제비는 더 기다릴 수 없었다');
         return;
       }
     }

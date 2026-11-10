@@ -126,6 +126,13 @@
     @media (orientation: portrait) { body.touch #rotate-hint { display: flex; } }
     #objmark { position: absolute; transform: translate(-50%, -50%); text-align: center; pointer-events: none; color: #7ff0ff; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-shadow: 0 1px 6px rgba(0,0,0,.8); white-space: nowrap; }
     #objmark.hidden, #interact.hidden { display: none; }
+    /* 무전 자막(임무의 이야기·다음 할 일) */
+    #comm { position: absolute; left: 50%; bottom: 128px; transform: translateX(-50%); width: max-content; max-width: min(640px, 84vw); background: rgba(10, 18, 30, .78); border-left: 3px solid #7fe0ff; border-radius: 4px; padding: 9px 16px; font-size: 15px; line-height: 1.5; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+    #comm.hidden { display: none; }
+    #comm.in { animation: commin .25s ease-out; }
+    @keyframes commin { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 100% { opacity: 1; transform: translateX(-50%); } }
+    #comm-who { color: #7fe0ff; font-weight: 800; margin-right: 10px; letter-spacing: 1px; }
+    body.touch #comm { bottom: auto; top: 58px; font-size: 12px; padding: 6px 12px; max-width: 62vw; }
     #objmark .diamond { width: 16px; height: 16px; margin: 0 auto 6px; border: 2px solid #7ff0ff; transform: rotate(45deg); box-shadow: 0 0 10px rgba(90, 230, 255, .8); background: rgba(90, 230, 255, .18); }
     #objmark.edge .diamond { background: #7ff0ff; }
     #interact { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); text-align: center; font-size: 14px; font-weight: 700; letter-spacing: 1px; text-shadow: 0 1px 6px rgba(0,0,0,.8); }
@@ -152,6 +159,8 @@
     .btn.primary { background: var(--blue); border-color: var(--blue); font-weight: 700; padding: 14px 40px; font-size: 18px; }
     .btn.primary:hover { background: #4a92ff; }
     .btn.sel { background: rgba(47,128,255,.45); border-color: var(--blue); }
+    .story { max-width: 680px; margin: 4px auto 18px; font-size: 13px; line-height: 1.7; opacity: .82; text-align: center; }
+    .story b { color: #cfe6ff; }
     .keys { margin-top: 26px; font-size: 13px; opacity: .7; line-height: 1.8; text-align: center; }
     .keys b { color: #fff; }
     .stats { display: grid; grid-template-columns: auto auto; gap: 6px 28px; font-size: 15px; margin-bottom: 26px; }
@@ -209,6 +218,7 @@
       <div class="l" style="transform: translate(7px,4px) rotate(45deg)"></div>
     </div>
     <div id="hsbanner">HEADSHOT</div>
+    <div id="comm" class="hidden"><span id="comm-who"></span><span id="comm-say"></span></div>
     <div id="dmgdir"></div>
     <div id="vignette"></div>
     <div id="flashwhite"></div>
@@ -221,6 +231,7 @@
   <div id="ov-menu" class="overlay loading">
     <h1>SKYFALL ARENA</h1>
     <div class="sub">PROTOTYPE · 임무: 탈출</div>
+    <div class="story">공중 화물 기지 <b>스카이독</b>. 아르고스 보안군이 화물 항로를 조작해 물자를 빼돌리고 있다.<br/>증거를 찾아 관제동에 잠입한 정찰 요원 <b>레이븐</b> — 경보가 울렸다. 기록을 들고 살아서 나가라. <b>부활은 없다.</b></div>
     <div class="row" id="mode">
       <button class="btn sel" data-m="mission">임무 (탈출)</button>
       <button class="btn" data-m="arena">아레나 (웨이브)</button>

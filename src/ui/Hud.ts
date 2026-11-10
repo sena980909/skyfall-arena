@@ -28,6 +28,12 @@ export class Hud {
   private readonly vignette = $('vignette');
   private readonly dmgnums = $('dmgnums');
   private readonly killfeed = $('killfeed');
+  private readonly commBox = $('comm');
+  private readonly commWho = $('comm-who');
+  private readonly commSay = $('comm-say');
+  private commQueue: [string, string][] = [];
+  private commBusy = false;
+  private commTimer = 0;
   private readonly botlabels = $('botlabels');
   private readonly lockmarks = $('lockmarks');
   private readonly skills = [$('skill-0'), $('skill-1')];
@@ -160,8 +166,36 @@ export class Hud {
     this.score.textContent = String(n);
   }
 
-  setLives(n: number): void {
-    this.lives.textContent = '♥'.repeat(Math.max(0, n)) + '♡'.repeat(Math.max(0, 3 - n));
+  setLives(n: number, max = 3): void {
+    this.lives.textContent = '♥'.repeat(Math.max(0, n)) + '♡'.repeat(Math.max(0, max - n));
+  }
+
+  /**
+   * 무전 자막: 화자와 한 줄. 여러 줄이 들어오면 차례로 보여 준다(한 줄에 글자 수에 따라 3.2~6초).
+   * 임무의 이야기와 다음에 할 일을 여기로 전한다(킬 피드는 작고 금방 지나간다).
+   */
+  comm(who: string, text: string): void {
+    this.commQueue.push([who, text]);
+    if (!this.commBusy) this.commNext();
+  }
+
+  private commNext(): void {
+    const line = this.commQueue.shift();
+    if (!line) {
+      this.commBusy = false;
+      this.commBox.classList.add('hidden');
+      return;
+    }
+    this.commBusy = true;
+    this.commWho.textContent = line[0];
+    this.commSay.textContent = line[1];
+    this.commBox.classList.remove('hidden');
+    // 같은 글자가 다시 떠도 들어오는 효과가 다시 돌게 한다
+    this.commBox.classList.remove('in');
+    void this.commBox.offsetWidth;
+    this.commBox.classList.add('in');
+    clearTimeout(this.commTimer);
+    this.commTimer = window.setTimeout(() => this.commNext(), Math.max(3200, Math.min(6000, 1400 + line[1].length * 85)));
   }
 
   /** 크로스헤어 벌어짐 (px) */
@@ -295,6 +329,10 @@ export class Hud {
   }
 
   resetFeeds(): void {
+    this.commQueue = [];
+    this.commBusy = false;
+    clearTimeout(this.commTimer);
+    this.commBox.classList.add('hidden');
     this.killfeed.replaceChildren();
     this.dmgnums.replaceChildren();
     this.dmgdir.replaceChildren();

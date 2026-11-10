@@ -18,7 +18,7 @@ import { Hud } from '@/ui/Hud';
 import { Player } from '@/entities/Player';
 import type { Bot } from '@/entities/Bot';
 import { WaveManager } from '@/world/WaveManager';
-import { Mission } from '@/world/Mission';
+import { Mission, MISSION_START } from '@/world/Mission';
 import { HealthPack } from '@/world/HealthPack';
 import type { Projectile } from '@/combat/Projectile';
 import { DIFFICULTIES, type DifficultyId } from '@/data/difficulty';
@@ -334,17 +334,23 @@ export class Game {
 
   // ---------- 흐름 ----------
 
-  /** 관문을 여닫고 길찾기 격자를 다시 만든다(닫혀 있으면 북쪽 구역은 도달 불가로 빠진다) */
-  private setGate(open: boolean): void {
-    if (this.map.gateOpen === open) return;
+  /** 이번 판의 시작 자리: 임무는 관제동 안, 아레나는 남쪽 착륙장 */
+  private get startPoint(): Vector3 {
+    return this.mode === 'mission' ? MISSION_START : this.map.playerSpawn;
+  }
+
+  /** 관문을 여닫고 길찾기 격자를 다시 만든다. 닫혀 있으면 시작 자리가 있는 쪽만 도달 가능 영역이 된다 */
+  private setGate(open: boolean, force = false): void {
+    if (this.map.gateOpen === open && !force) return;
     this.map.setGate(open);
-    this.nav = new NavGrid(this.map);
+    this.nav = new NavGrid(this.map, this.startPoint);
     this.ctx.nav = this.nav;
   }
 
   private startGame(): void {
     this.sfx.init();
-    this.setGate(false);
+    // 모드가 바뀌면 시작 자리(길찾기 영역의 기준)가 달라지므로 관문 상태가 같아도 격자를 다시 만든다
+    this.setGate(false, true);
     for (const b of this.bots) {
       this.scene.remove(b.group, b.debugLine);
     }
@@ -354,15 +360,16 @@ export class Game {
     for (const pr of this.projectiles) pr.dispose();
     this.projectiles = [];
     this.hud.resetFeeds();
-    this.lives = PLAYER_LIVES;
+    // 임무에는 부활이 없다(쓰러지면 실패). 아레나는 목숨 셋
+    this.lives = this.mode === 'mission' ? 1 : PLAYER_LIVES;
     this.score = 0;
     this.simTime = 0;
     this.ctx.now = 0;
     this.startedAt = 0;
     this.player.resetStats();
     this.waveLog.length = 0;
-    this.player.spawn(this.map.playerSpawn, 0);
-    this.hud.setLives(this.lives);
+    this.player.spawn(this.startPoint, 0);
+    this.hud.setLives(this.lives, this.lives);
     this.hud.setScore(this.score);
     this.hud.setVisible(true);
     this.hud.showOverlay(null);
@@ -405,10 +412,10 @@ export class Game {
     this.lastKillerName = by;
     this.lives--;
     this.waves.playerDiedThisWave = true;
-    this.hud.setLives(this.lives);
+    this.hud.setLives(this.lives, this.mode === 'mission' ? 1 : PLAYER_LIVES);
     this.hud.killFeed(`${by} ▶ YOU`, 'death');
     if (this.lives <= 0) {
-      this.endGame(false);
+      this.endGame(false, this.mode === 'mission' ? `${by}에게 쓰러졌다` : '');
       return;
     }
     this.state = 'dead';
@@ -436,7 +443,8 @@ export class Game {
     const elapsed = Math.round(this.simTime - this.startedAt);
     const label = this.ctx.difficulty.label;
     const sub = this.mode === 'mission'
-      ? (victory ? `임무 완수: 탈출 성공 · ${label}` : `임무 실패: ${reason || '전멸'} · ${label}`)
+      ? (victory ? `임무 완수 — 제비가 스카이독을 벗어났다. 항로 기록은 무사히 전달되었다 · ${label}`
+        : `임무 실패 — ${reason || '레이븐의 신호가 끊겼다'}. 항로 기록은 스카이독에 남았다 · ${label}`)
       : (victory ? `웨이브 ${this.waves.totalWaves}개 모두 섬멸 · ${label}` : `웨이브 ${this.waves.waveNumber}에서 전멸 · ${label}`);
     this.hud.setEnd(victory, sub, [
       ['점수', String(this.score)],
