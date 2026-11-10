@@ -6,18 +6,22 @@ export interface BossDef {
 }
 
 export interface WaveDef {
-  /** 일반 봇 수 */
+  /** 봇 수(돌입병·저격병 포함) */
   bots: number;
+  /** 그중 돌입병 수 */
+  rushers?: number;
+  /** 그중 저격병 수 */
+  marksmen?: number;
   /** 보스 (있으면 일반 봇은 호위) */
   boss?: BossDef;
 }
 
 export const WAVES: WaveDef[] = [
   { bots: 3 },
-  { bots: 4 },
-  { bots: 5 },
-  { bots: 6 },
-  { bots: 4, boss: { name: '레이븐 보스', hpMult: 3, scale: 1.35 } },
+  { bots: 4, rushers: 1 },
+  { bots: 5, rushers: 1, marksmen: 1 },
+  { bots: 6, rushers: 2, marksmen: 1 },
+  { bots: 4, rushers: 1, marksmen: 1, boss: { name: '레이븐 보스', hpMult: 3, scale: 1.35 } },
 ];
 
 export const WAVE_REST_SECONDS = 8;

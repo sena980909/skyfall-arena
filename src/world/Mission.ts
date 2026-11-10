@@ -79,8 +79,12 @@ const CELL_SPOTS: { pos: Vector3; where: string }[] = [
 const CELL_PICKUP = 1.5;
 /** 서버실의 셀을 처음 집으면 로비 양끝에서 적이 나와 나가는 길을 막는다 */
 const CELL_GUARDS = [new Vector3(-20, 0, -128), new Vector3(20, 0, -128)];
-/** 돌입병: 멀리서 쏘지 않고 3~6m까지 파고든다(서버실 거점을 실제로 빼앗으러 들어온다) */
-const RUSH: BotOptions = { rush: true, hpMult: 0.7 };
+/** 돌입병: 멀리서 쏘지 않고 3~6m까지 파고든다(서버실 거점을 실제로 빼앗으러 들어온다). 저격병: 멀리서 조준선을 비추고 한 발 */
+const RUSH: BotOptions = { kind: 'rusher' };
+const MARKSMAN: BotOptions = { kind: 'marksman' };
+/** 통로에 들어설 때 통로 북쪽 끝에서 내려다보는 저격병, 셀을 들고 야드로 나설 때 야드 남쪽 끝의 저격병 */
+const CORRIDOR_MARKSMAN = new Vector3(2, 0, -68);
+const YARD_MARKSMAN = new Vector3(-14, 0, -76);
 const AMBER = 0xffb030;
 const HEAVY: BotOptions = { hpMult: 1.8, scale: 1.15 };
 const BOSS: BotOptions = { hpMult: 3, scale: 1.35, boss: true };
@@ -382,6 +386,19 @@ export class Mission {
     }
   }
 
+  /** 종류를 골라 하나를 대기열에 넣는다. pos를 주지 않으면 등장 지점은 그때 고른다 */
+  private queueOne(delay: number, opts: BotOptions, pos?: Vector3): void {
+    this.botCounter++;
+    const label = opts.kind === 'rusher' ? '돌입병' : opts.kind === 'marksman' ? '저격병' : opts === HEAVY ? '중장병' : '돌격병';
+    this.spawnQueue.push({ at: this.ctx.now + delay, name: `${label} ${this.botCounter}`, opts, pos });
+    this.spawnQueue.sort((a, b) => a.at - b.at);
+  }
+
+  /** 살아 있는(또는 곧 나올) 저격병 수. 한 번에 하나만 둔다 */
+  private get marksmen(): number {
+    return this.ctx.bots.filter((b) => b.alive && b.def.kind === 'marksman').length + this.spawnQueue.filter((s) => s.opts.kind === 'marksman').length;
+  }
+
   private spawn(name: string, opts: BotOptions, pos?: Vector3): Bot {
     const bot = new Bot(this.ctx, name, pos ? pos.clone() : this.pickSpawn(), opts);
     this.ctx.bots.push(bot);
@@ -507,6 +524,7 @@ export class Mission {
           r.ambushed = true;
           const done = this.relaysDone;
           this.queue(2, 0.4, done >= 2 ? 1 : 0);
+          if (done === 1) this.queueOne(1.4, RUSH);
           hud.killFeed('매복! 적이 접근한다', 'death');
         }
         if (r.progress >= 1) {
@@ -526,8 +544,9 @@ export class Mission {
       // 통로에 들어서면 매복이 터진다(한 번)
       if (ctx.map.gateOpen && !this.corridorSprung && ctx.player.position.z < -36) {
         this.corridorSprung = true;
-        this.queue(3, 0.2);
-        hud.killFeed('통로 매복! 앞뒤에서 온다', 'death');
+        this.queue(2, 0.2);
+        this.queueOne(0.2, MARKSMAN, CORRIDOR_MARKSMAN);
+        hud.killFeed('통로 매복! 끝에 저격병 — 조준선이 보이면 엄폐하라', 'death');
       }
       // 관제동에 들어서면 방 안에서 기다리던 적이 나온다(한 번)
       if (ctx.map.gateOpen && !this.blockSprung && ctx.player.position.z < -124) {
@@ -611,8 +630,9 @@ export class Mission {
           if (p.ctrl.onGround) c.ground.copy(p.position);
           if (!this.carrySprung && c === this.cells[0] && p.position.z > -120) {
             this.carrySprung = true;
-            this.queue(2, 0.2, 1);
-            hud.killFeed('야드에 차단조 — 셀을 든 채로는 달릴 수 없다', 'death');
+            this.queue(2, 0.2);
+            this.queueOne(0.2, MARKSMAN, YARD_MARKSMAN);
+            hud.killFeed('야드에 차단조와 저격병 — 셀을 든 채로는 달릴 수 없다', 'death');
           }
           const d = this.tmp.copy(p.position).sub(BEACON_POS);
           if (Math.hypot(d.x, d.z) <= INTERACT_RADIUS && Math.abs(d.y) < 2.5) {
@@ -647,7 +667,10 @@ export class Mission {
                 this.spawnQueue.push({ at: now + 0.6 + i * 0.4, name: `경비병 ${this.botCounter}`, opts: {}, pos });
               });
               this.spawnQueue.sort((a, b) => a.at - b.at);
-            } else this.queue(3, 0.3);
+            } else {
+              this.queue(2, 0.3);
+              this.queueOne(1.3, RUSH);
+            }
             hud.killFeed('전원 셀 확보 — 야드 신호기로. 들고 있는 동안은 달릴 수 없다', k === this.cells[0] ? 'hs' : 'death');
           }
           break;
@@ -690,8 +713,11 @@ export class Mission {
         this.waveCount++;
         const room = DEFEND_MAX_ALIVE - this.aliveBots;
         if (room > 0) {
-          const heavy = this.waveCount % 3 === 0 && room >= 2 ? 1 : 0;
-          this.queue(Math.min(2, room) - heavy, 0.2, heavy);
+          // 무리마다 하나는 다른 종류: 돌입병 → 저격병(하나만) → 중장병 순으로 돌아간다
+          const turn = this.waveCount % 3;
+          const special = room >= 2 ? (turn === 0 ? HEAVY : turn === 2 && this.marksmen === 0 ? MARKSMAN : RUSH) : null;
+          this.queue(Math.min(2, room) - (special ? 1 : 0), 0.2);
+          if (special) this.queueOne(0.7, special);
         }
       }
       hud.setObjective('목표: 탈출선이 올 때까지 방어', `남은 적 ${this.aliveBots}`);

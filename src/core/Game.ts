@@ -1,3 +1,4 @@
+import { applyHueSwap } from '@/render/HueSwap';
 import {
   ACESFilmicToneMapping, Color, DirectionalLight, Fog, HemisphereLight, PCFSoftShadowMap, PerspectiveCamera, Scene, Vector3,
   WebGLRenderer,
@@ -535,6 +536,24 @@ export class Game {
       dummy = SkeletonUtils.clone(skinned);
       dummy.position.set(0, -200, 0);
       this.scene.add(dummy);
+      // 종류별 갑옷 색(채널 돌리기)은 셰이더가 따로다. 살아 있을 때(불투명)와 사라질 때(투명) 것을 모두 미리 컴파일한다
+      for (const hue of ['rbg', 'brg'] as const) for (const transparent of [false, true]) {
+        const v = SkeletonUtils.clone(skinned);
+        v.traverse((o) => {
+          const mesh = o as import('three').Mesh;
+          if (!mesh.isMesh) return;
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          const out = mats.map((orig) => {
+            if (orig.name !== 'bot_detail') return orig;
+            const mm = orig.clone();
+            applyHueSwap(mm, hue);
+            mm.transparent = transparent;
+            return mm;
+          });
+          mesh.material = out.length === 1 ? out[0] : out;
+        });
+        dummy.add(v);
+      }
     }
     this.fx.warmup(this.renderer, this.camera);
     if (dummy) this.scene.remove(dummy);
@@ -585,7 +604,7 @@ export class Game {
   private assignAttackTokens(): void {
     const n = this.ctx.difficulty.attackTokens;
     const p = this.player.position;
-    const seeing = this.bots.filter((b) => b.alive && b.seesPlayer && !b.isBoss);
+    const seeing = this.bots.filter((b) => b.alive && b.seesPlayer && !b.isBoss && !b.def.shot);
     seeing.sort((a, b) => a.position.distanceTo(p) - b.position.distanceTo(p));
     for (const b of this.bots) b.hasAttackToken = false;
     for (let i = 0; i < Math.min(n, seeing.length); i++) seeing[i].hasAttackToken = true;

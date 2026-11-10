@@ -1,3 +1,4 @@
+import { copyHueSwap } from '@/render/HueSwap';
 import {
   AdditiveBlending, BufferGeometry, CanvasTexture, Color, DoubleSide, Float32BufferAttribute, Line, LineBasicMaterial,
   Mesh, MeshBasicMaterial, Object3D, PlaneGeometry, PointLight, Scene, Sprite, SpriteMaterial, Texture, Vector3,
@@ -407,7 +408,9 @@ export class Fx {
     obj.traverse((o) => {
       if ((o as Mesh).isMesh) {
         const mesh = o as Mesh;
-        const m = (mesh.material as import('three').MeshStandardMaterial).clone();
+        const src = mesh.material as import('three').MeshStandardMaterial;
+        const m = src.clone();
+        copyHueSwap(src, m);
         m.transparent = true;
         mesh.material = m;
         mats.push({ m });

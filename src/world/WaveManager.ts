@@ -1,3 +1,4 @@
+import { ENEMIES, type EnemyKind } from '@/data/enemies';
 import { Vector3 } from 'three';
 import { Bot } from '@/entities/Bot';
 import { WAVE_REST_SECONDS, WAVES } from '@/data/waves';
@@ -12,7 +13,7 @@ export class WaveManager {
   playerDiedThisWave = false;
   private restEnd = 0;
   /** 스폰 큐: [시각, 보스 여부] */
-  private spawnQueue: [number, boolean][] = [];
+  private spawnQueue: [number, boolean, EnemyKind][] = [];
   boss: Bot | null = null;
   private lastSpawnIdx = -1;
   private botCounter = 0;
@@ -67,8 +68,15 @@ export class WaveManager {
     this.ctx.bots.length = 0;
     this.boss = null;
     this.spawnQueue = [];
-    if (def.boss) this.spawnQueue.push([this.ctx.now + 0.6, true]);
-    for (let i = 0; i < def.bots; i++) this.spawnQueue.push([this.ctx.now + 0.6 + (i + (def.boss ? 1 : 0)) * 0.5, false]);
+    if (def.boss) this.spawnQueue.push([this.ctx.now + 0.6, true, 'trooper']);
+    // 돌격병이 먼저 나오고 돌입병·저격병이 뒤따른다
+    const marksmen = def.marksmen ?? 0;
+    const rushers = def.rushers ?? 0;
+    for (let i = 0; i < def.bots; i++) {
+      const k = def.bots - 1 - i;
+      const kind: EnemyKind = k < marksmen ? 'marksman' : k < marksmen + rushers ? 'rusher' : 'trooper';
+      this.spawnQueue.push([this.ctx.now + 0.6 + (i + (def.boss ? 1 : 0)) * 0.5, false, kind]);
+    }
     this.ctx.hud.setWave(this.waveNumber, WAVES.length);
     this.ctx.hud.setBots(this.aliveBots);
     this.ctx.hud.setRest('');
@@ -90,7 +98,7 @@ export class WaveManager {
     return c.s.clone().add(new Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5));
   }
 
-  private spawnBot(isBoss: boolean): void {
+  private spawnBot(isBoss: boolean, kind: EnemyKind): void {
     const def = WAVES[this.waveIndex];
     let bot: Bot;
     if (isBoss && def.boss) {
@@ -98,7 +106,7 @@ export class WaveManager {
       this.boss = bot;
     } else {
       this.botCounter++;
-      bot = new Bot(this.ctx, `레이븐 봇 ${this.botCounter}`, this.pickSpawn());
+      bot = new Bot(this.ctx, `${ENEMIES[kind].label} ${this.botCounter}`, this.pickSpawn(), { kind });
     }
     this.ctx.bots.push(bot);
     this.ctx.scene.add(bot.group, bot.debugLine);
@@ -110,8 +118,8 @@ export class WaveManager {
     const now = this.ctx.now;
     if (this.state === 'active') {
       while (this.spawnQueue.length && now >= this.spawnQueue[0][0]) {
-        const [, isBoss] = this.spawnQueue.shift() as [number, boolean];
-        this.spawnBot(isBoss);
+        const [, isBoss, kind] = this.spawnQueue.shift() as [number, boolean, EnemyKind];
+        this.spawnBot(isBoss, kind);
       }
       if (this.boss) {
         this.ctx.hud.setBoss(this.boss.alive ? { name: this.boss.displayName, hp: this.boss.hp, max: this.boss.maxHp } : null);

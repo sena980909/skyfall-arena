@@ -1,13 +1,15 @@
 import {
-  AnimationAction, AnimationClip, AnimationMixer, Box3, BoxGeometry, BufferGeometry, CapsuleGeometry, Color,
-  Euler, Float32BufferAttribute, Group, Line, LineBasicMaterial, LoopOnce, LoopPingPong, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion,
+  AdditiveBlending, AnimationAction, AnimationClip, AnimationMixer, Box3, BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry,
+  Euler, Float32BufferAttribute, Group, Line, LineBasicMaterial, LoopOnce, LoopPingPong, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, Quaternion,
   SkinnedMesh, SphereGeometry, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { buildAlignedGun } from '@/render/GunAlign';
+import { applyHueSwap } from '@/render/HueSwap';
 import { CharacterController } from './CharacterController';
 import { Weapon } from '@/combat/Weapon';
 import { RAVEN } from '@/data/heroes';
+import { ENEMIES, type ChargedShot, type EnemyDef, type EnemyKind } from '@/data/enemies';
 import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type Hittable } from '@/combat/Hitscan';
 import { angleBetweenDeg, DEG2RAD, gaussian, jitterDirection, randInt, randRange, rotateTowards, yawOf } from '@/core/MathUtil';
 import type { GameContext } from '@/core/Context';
@@ -22,8 +24,8 @@ export interface BotOptions {
   hpMult?: number;
   scale?: number;
   boss?: boolean;
-  /** 돌입: 멀리서 쏘지 않고 가까이(3~6m) 파고든다 */
-  rush?: boolean;
+  /** 적 종류(기본 돌격병). 수치는 data/enemies.ts */
+  kind?: EnemyKind;
 }
 
 /** 봇 손 라이플 오프셋 (월드 미터/라디안). 브라우저에서 튜닝 후 반영 */
@@ -39,8 +41,10 @@ const MEMORY_SECONDS = 3;
 const CLIP_SPEED = { run: 5.6, jog: 3.0, walk: 1.55, back: 1.43, strafe: 2.8, strafeFast: 5.5 };
 /** Blender 제작 리그(bot_rig.glb)의 클립 속도: tools/blender/build_bot_rig.py의 GAITS와 같은 값 */
 const CLIP_SPEED_V2 = { run: 4.7, jog: 2.8, walk: 1.6, back: 3.2, strafe: 2.8, strafeFast: 5.5 };
+/** 엄폐 판단에 쓰는 기준 교전 거리(돌격병). 종류별 교전 거리는 data/enemies.ts */
 const ENGAGE_MAX = 20;
-const ENGAGE_MIN = 10;
+/** 저격병 총열 길이(m) */
+const BARREL_LEN = 0.5;
 const RETREAT_COOLDOWN = 15;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
@@ -57,7 +61,10 @@ export class Bot implements Hittable, Healable {
   readonly group = new Group();
   readonly hitMeshes: Mesh[] = [];
   readonly ctrl: CharacterController;
-  readonly weapon = new Weapon(RAVEN.weapon);
+  readonly weapon: Weapon;
+  /** 적 종류의 수치(색·크기·무기·교전 거리) */
+  readonly def: EnemyDef;
+  private readonly moveSpeed: number;
   readonly maxHp: number;
   readonly isBoss: boolean;
   readonly scale: number;
@@ -92,8 +99,12 @@ export class Bot implements Hittable, Healable {
   private nextRepath = 0;
   private strafeDir = 1;
   /** 교전 거리(이보다 멀면 다가가고, 가까우면 물러난다) */
-  private engageMin = ENGAGE_MIN;
-  private engageMax = ENGAGE_MAX;
+  private readonly engageMin: number;
+  private readonly engageMax: number;
+  // 저격병: 조준선을 비추기 시작한 시각(-1이면 조준 중이 아니다), 다음 조준이 가능한 시각, 조준선 메시
+  private chargeAt = -1;
+  private nextShotAt = 0;
+  private laser: Mesh | null = null;
   private nextStrafeFlip = 0;
   private stuckTimer = 0;
   /** 경로 추종 중 누적 끼임 시간: 반복되면 근처 지점으로 우회 */
@@ -219,20 +230,22 @@ export class Bot implements Hittable, Healable {
   }
 
   constructor(private readonly ctx: GameContext, readonly displayName: string, spawn: Vector3, opts: BotOptions = {}) {
-    const scale = opts.scale ?? 1;
+    const def = ENEMIES[opts.kind ?? 'trooper'];
+    this.def = def;
+    const scale = (opts.scale ?? 1) * def.scale;
     this.scale = scale;
     this.isBoss = opts.boss ?? false;
-    if (opts.rush) {
-      this.engageMin = 3;
-      this.engageMax = 6;
-    }
+    this.engageMin = def.engageMin;
+    this.engageMax = def.engageMax;
+    this.moveSpeed = RAVEN.moveSpeed * def.speedMult;
+    this.weapon = new Weapon(def.weapon);
     this.ctrl = new CharacterController(ctx.map.colliders);
     this.ctrl.radius = 0.4 * scale;
     this.ctrl.height = 1.8 * scale;
     this.ctrl.teleport(spawn);
-    this.maxHp = Math.round(RAVEN.hp * (opts.hpMult ?? 1) * ctx.difficulty.hpMult);
+    this.maxHp = Math.round(RAVEN.hp * (opts.hpMult ?? 1) * def.hpMult * ctx.difficulty.hpMult);
     this.hp = this.maxHp;
-    this.aimSigmaMult = this.isBoss ? 0.7 : 1;
+    this.aimSigmaMult = this.isBoss ? 0.7 : def.aimSigmaMult;
     this.reactionMult = this.isBoss ? 0.8 : 1;
 
     const bodyColor = this.isBoss ? 0xc0202a : 0xff5a2f;
@@ -242,7 +255,7 @@ export class Bot implements Hittable, Healable {
     body.position.y = 0.75;
     const head = tagHitMesh(new Mesh(new SphereGeometry(0.22, 12, 10), this.headMat), this, 'head');
     head.position.y = 1.68;
-    const visorColor = this.isBoss ? 0xff3b3b : 0xffd166;
+    const visorColor = this.isBoss ? 0xff3b3b : def.visor;
     this.visorMat = new MeshStandardMaterial({ color: visorColor, emissive: visorColor, emissiveIntensity: 0.9 });
     this.visorColor = visorColor;
     const visor = new Mesh(new BoxGeometry(0.26, 0.07, 0.1), this.visorMat);
@@ -301,6 +314,11 @@ export class Bot implements Hittable, Healable {
           else if (mm.name === 'armor_blue') mm.color.copy(team).multiplyScalar(0.5);
           // 상세 모델은 텍스처에 색이 들어 있다. 보스만 붉게 물들인다
           else if (mm.name === 'bot_detail' && this.isBoss) mm.color.setRGB(1.0, 0.42, 0.42);
+          // 종류별 색: 채널을 돌려 색상을 바꾸고, 필요하면 색을 곱한다
+          else if (mm.name === 'bot_detail') {
+            if (this.def.hue) applyHueSwap(mm, this.def.hue);
+            if (this.def.tint) mm.color.setRGB(...this.def.tint);
+          }
           if (mm.name === 'bot_visor') {
             mm.color.setHex(this.visorColor);
             mm.emissive.setHex(this.visorColor);
@@ -308,6 +326,7 @@ export class Bot implements Hittable, Healable {
             this.visorMat = mm;
           } else if (/glow/.test(mm.name)) {
             if (this.isBoss) mm.emissive.setHex(0xff3020);
+            else if (this.def.glow !== null) mm.emissive.setHex(this.def.glow);
             mm.emissiveIntensity = 1.3;
           } else {
             mm.emissive = new Color(0x000000);
@@ -336,6 +355,7 @@ export class Bot implements Hittable, Healable {
     if (torso) this.spineBones = hips ? [hips, torso] : [torso];
     this.aimBone = model.getObjectByName('armsgun') ?? null;
     this.rifleMuzzle = model.getObjectByName('muzzle') ?? null;
+    if (this.def.shot) this.addMarksmanKit();
     this.rigV2 = true;
     this.clipSpeed = CLIP_SPEED_V2;
     this.mixer = new AnimationMixer(model);
@@ -345,6 +365,63 @@ export class Bot implements Hittable, Healable {
       this.actions.death.clampWhenFinished = true;
     }
     this.playAnim(this.actions.idle ? 'idle' : Object.keys(this.actions)[0], 0.15, true);
+  }
+
+  /** 저격병의 긴 총열(총구 뼈에 붙인다. 뼈 공간은 +Y가 앞)과 조준선 메시(봇 그룹의 자식, 길이는 z 배율로 맞춘다) */
+  private addMarksmanKit(): void {
+    if (this.rifleMuzzle) {
+      const barrel = new Mesh(new CylinderGeometry(0.016, 0.02, BARREL_LEN, 8), new MeshStandardMaterial({ color: 0x15171c, roughness: 0.45, metalness: 0.6 }));
+      barrel.position.y = BARREL_LEN / 2;
+      const tip = new Mesh(new CylinderGeometry(0.03, 0.03, 0.07, 8), new MeshStandardMaterial({ color: 0x1a0612, emissive: this.def.visor, emissiveIntensity: 1.6 }));
+      tip.position.y = BARREL_LEN;
+      this.rifleMuzzle.add(barrel, tip);
+    }
+    const geo = new BoxGeometry(0.022, 0.022, 1);
+    geo.translate(0, 0, 0.5);
+    this.laser = new Mesh(geo, new MeshBasicMaterial({ color: this.def.bolt, transparent: true, opacity: 0.4, blending: AdditiveBlending, depthWrite: false }));
+    this.laser.visible = false;
+    this.laser.frustumCulled = false;
+    this.group.add(this.laser);
+  }
+
+  /** 총구 위치(저격병은 긴 총열 끝) */
+  private muzzlePoint(out: Vector3, dir: Vector3): Vector3 {
+    if (this.rifleMuzzle) {
+      this.rifleMuzzle.getWorldPosition(out);
+      if (this.def.shot) out.addScaledVector(dir, BARREL_LEN * this.scale);
+    } else {
+      out.copy(this.eye).addScaledVector(dir, 0.7);
+      out.y -= 0.35 * this.scale;
+    }
+    return out;
+  }
+
+  /**
+   * 저격병의 조준선: 총구에서 실제로 맞을 지점까지. 조준하는 동안 점점 진해지고, 조준이 굳으면 굵고 밝게 깜빡인다.
+   * 봇 그룹의 행렬을 맞춘 뒤(syncHitboxMatrices 다음)에 불러야 한 프레임 어긋나지 않는다.
+   */
+  private updateLaser(): void {
+    const shot = this.def.shot;
+    const laser = this.laser;
+    if (!shot || !laser) return;
+    const on = this.alive && this.chargeAt >= 0;
+    laser.visible = on;
+    if (!on) return;
+    const ctx = this.ctx;
+    const t = ctx.now - this.chargeAt;
+    const locked = t >= shot.charge;
+    const dir = this.tmp3.copy(this.aimDir).normalize();
+    this.eye.copy(this.ctrl.pos).setY(this.ctrl.pos.y + this.eyeHeight);
+    const res = hitscan(this.eye, dir, shot.range, ctx.map.meshes, ctx.hittables(), this);
+    const a = this.group.worldToLocal(this.muzzlePoint(this.tmp, dir));
+    const b = this.group.worldToLocal(this.tmp2.copy(res.point));
+    const len = a.distanceTo(b);
+    laser.position.copy(a);
+    laser.quaternion.setFromUnitVectors(Bot.FWD, b.sub(a).normalize());
+    const k = Math.min(1, t / shot.charge);
+    const w = locked ? 2.6 : 0.8 + 0.8 * k;
+    laser.scale.set(w, w, len);
+    (laser.material as MeshBasicMaterial).opacity = locked ? (Math.floor(ctx.now * 30) % 2 ? 1 : 0.6) : 0.22 + 0.4 * k;
   }
 
   /** 상하 조준: 교전 중엔 조준 피치, 아니면 총구를 내린 로우레디. 사격 반동은 짧게 위로 */
@@ -1009,6 +1086,7 @@ export class Bot implements Hittable, Healable {
   private deathClip = false;
   private readonly fallAxis = new Vector3(1, 0, 0);
   private fallTwist = 0;
+  private static readonly FWD = new Vector3(0, 0, 1);
   private static readonly FALL_DUR = 0.55;
   private static readonly LIE_DUR = 0.9;
 
@@ -1016,6 +1094,8 @@ export class Bot implements Hittable, Healable {
     this.alive = false;
     this.state = 'dead';
     this.turnStep = null;
+    this.chargeAt = -1;
+    if (this.laser) this.laser.visible = false;
     this.debugLine.visible = false;
     this.ctx.sfx.botDeath(this.ctrl.pos);
     // 피격 발광이 시체에 남지 않도록
@@ -1145,6 +1225,8 @@ export class Bot implements Hittable, Healable {
         return;
     }
 
+    // 저격병은 시야를 잃으면 조준을 처음부터 다시 한다
+    if (!this.canSee || this.state === 'retreat') this.chargeAt = -1;
     if (this.canSee && this.state !== 'retreat') this.aimAndFire(dt);
     else if (this.state === 'combat' && this.mode === 'hiding') {
       rotateTowards(this.aimDir, this.tmp.copy(this.lastSeenPos).sub(this.ctrl.pos).setY(0).normalize(), 240 * dt);
@@ -1155,6 +1237,7 @@ export class Bot implements Hittable, Healable {
     if (this.mixer) this.updateAnimation(dt);
     else this.group.rotation.y = yawOf(this.aimDir);
     this.syncHitboxMatrices();
+    this.updateLaser();
   }
 
   /** 렌더와 무관하게 히트박스 월드 행렬을 최신으로 (레이캐스트 정확도, 저프레임/헤드리스 시뮬레이션 대비) */
@@ -1238,9 +1321,19 @@ export class Bot implements Hittable, Healable {
     target.addScaledVector(right, Math.tan(this.noiseYaw) * dist);
     target.y += Math.tan(this.noisePitch) * dist;
     const noisy = this.tmp2.copy(target).sub(this.eye).normalize();
-    rotateTowards(this.aimDir, noisy, d.aimSpeedDeg * dt);
+    const shot = this.def.shot;
+    // 저격병은 쏘기 직전(lock) 동안 조준을 굳힌다. 그 사이에 옆으로 벗어나면 빗나간다
+    const locked = !!shot && this.chargeAt >= 0 && now >= this.chargeAt + shot.charge;
+    if (!locked) rotateTowards(this.aimDir, noisy, d.aimSpeedDeg * dt);
 
     if (now < this.firstSeenTime + d.reactionTime * this.reactionMult) return;
+    if (shot) {
+      // 조준선을 비추고(charge) → 굳히고(lock) → 한 발. 공격 토큰과 무관하다(느리고 예고가 있다)
+      if (this.chargeAt < 0) {
+        if (now >= this.nextShotAt && angleBetweenDeg(this.aimDir, this.desired) < 6) this.chargeAt = now;
+      } else if (now >= this.chargeAt + shot.charge + shot.lock) this.fireCharged(shot);
+      return;
+    }
     if (this.weapon.ammo === 0) {
       if (this.weapon.startReload(now)) this.onReloadStarted();
       return;
@@ -1258,6 +1351,24 @@ export class Bot implements Hittable, Healable {
     }
   }
 
+  /** 저격병의 한 발: 퍼짐 없이 굳힌 조준 방향 그대로 */
+  private fireCharged(shot: ChargedShot): void {
+    const ctx = this.ctx;
+    this.chargeAt = -1;
+    this.nextShotAt = ctx.now + shot.cooldown * randRange(0.9, 1.25);
+    this.shootUntil = ctx.now + 0.5;
+    this.rifleKick = 0.14;
+    const dir = this.tmp3.copy(this.aimDir).normalize();
+    const res = hitscan(this.eye, dir, shot.range, ctx.map.meshes, ctx.hittables(), this);
+    const muzzle = this.muzzlePoint(this.tmp, dir);
+    ctx.fx.bolt(muzzle, res.point, this.def.bolt, 0xffffff, 8, 320, res.normal, 9);
+    ctx.fx.muzzleSprite(muzzle, 0.4);
+    ctx.sfx.shootFar(0.6, muzzle);
+    if (res.target === ctx.player) {
+      ctx.player.takeDamage({ amount: Math.max(1, Math.round(shot.damage * ctx.difficulty.damageMult)), headshot: false, from: this.ctrl.pos, attacker: this });
+    }
+  }
+
   private onReloadStarted(): void {
     const d = this.ctx.difficulty;
     if (this.state !== 'combat' || this.mode !== 'engage') return;
@@ -1272,13 +1383,8 @@ export class Bot implements Hittable, Healable {
     this.rifleKick = 0.06;
     const dir = jitterDirection(this.aimDir, this.weapon.spread);
     const res = hitscan(this.eye, dir, this.weapon.def.range, ctx.map.meshes, ctx.hittables(), this);
-    const muzzle = this.tmp;
-    if (this.rifleMuzzle) this.rifleMuzzle.getWorldPosition(muzzle);
-    else {
-      muzzle.copy(this.eye).addScaledVector(dir, 0.7);
-      muzzle.y -= 0.35 * this.scale;
-    }
-    ctx.fx.bolt(muzzle, res.point, this.isBoss ? 0xff4040 : 0xff8a5a, res.target === ctx.player ? 0xff4040 : 0xffb27a, res.target ? 4 : 2, 140, res.normal, 3);
+    const muzzle = this.muzzlePoint(this.tmp, dir);
+    ctx.fx.bolt(muzzle, res.point, this.isBoss ? 0xff4040 : this.def.bolt, res.target === ctx.player ? 0xff4040 : 0xffb27a, res.target ? 4 : 2, 140, res.normal, 3);
     ctx.fx.muzzleSprite(muzzle, 0.22);
     const distToPlayer = this.ctrl.pos.distanceTo(ctx.player.position);
     ctx.sfx.shootFar(Math.max(0.05, 0.35 - distToPlayer * 0.006), muzzle);
@@ -1360,7 +1466,7 @@ export class Bot implements Hittable, Healable {
       this.patrolTarget = this.ctx.nav.randomWalkable();
       this.setPathTo(this.patrolTarget);
     }
-    this.followPath(dt, this.hero.moveSpeed * 0.6);
+    this.followPath(dt, this.moveSpeed * 0.6);
   }
 
   private chase(dt: number): void {
@@ -1368,7 +1474,7 @@ export class Bot implements Hittable, Healable {
       this.nextRepath = this.ctx.now + 0.6;
       this.setPathTo(this.lastSeenPos);
     }
-    this.followPath(dt, this.hero.moveSpeed);
+    this.followPath(dt, this.moveSpeed);
   }
 
   // ---------- 교전 ----------
@@ -1396,7 +1502,7 @@ export class Bot implements Hittable, Healable {
         return;
       }
       case 'toCover': {
-        const arrived = this.followPath(dt, this.hero.moveSpeed * 1.05);
+        const arrived = this.followPath(dt, this.moveSpeed * 1.05);
         if (arrived || now >= this.coverTimeout) {
           this.mode = 'hiding';
           const reloadLeft = this.weapon.reloading ? (1 - this.weapon.reloadProgress(now)) * this.weapon.def.reloadTime : 0;
@@ -1429,7 +1535,7 @@ export class Bot implements Hittable, Healable {
           this.nextRepath = now + 0.8;
           this.setPathTo(this.lastSeenPos);
         }
-        const arrived = this.followPath(dt, this.hero.moveSpeed);
+        const arrived = this.followPath(dt, this.moveSpeed);
         if (arrived) this.enter(alert ? 'chase' : 'patrol');
         return;
       }
@@ -1441,7 +1547,12 @@ export class Bot implements Hittable, Healable {
     const toP = this.tmp.copy(ctx.player.position).sub(this.ctrl.pos).setY(0);
     const dist = toP.length();
     toP.divideScalar(dist || 1);
-    const speed = this.hero.moveSpeed * (this.isBoss ? 0.75 : 0.85);
+    const speed = this.moveSpeed * (this.isBoss ? 0.75 : 0.85);
+    // 저격병은 조준선을 비추는 동안 멈춰 선다
+    if (this.chargeAt >= 0) {
+      this.ctrl.moveAndSlide(dt, this.wish.set(0, 0, 0));
+      return;
+    }
     const heightGap = ctx.player.position.y - this.ctrl.pos.y;
 
     // 멀거나, 플레이어가 높은 곳에 있으면 경로로 접근
@@ -1562,7 +1673,7 @@ export class Bot implements Hittable, Healable {
       this.nextRepath = ctx.now + 1.0;
       this.setPathTo(this.retreatPack.position);
     }
-    const arrived = this.followPath(dt, this.hero.moveSpeed);
+    const arrived = this.followPath(dt, this.moveSpeed);
     if ((arrived && !this.retreatPack) || ctx.now >= this.retreatUntil) {
       this.retreatPack = null;
       this.enter('chase');
