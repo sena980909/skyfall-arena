@@ -168,6 +168,9 @@ export class Game {
 
     if (mobile) {
       document.body.classList.add('touch');
+      // The rotate hint can be dismissed: some app views stay in portrait.
+      const hint = document.getElementById('rotate-hint');
+      hint?.addEventListener('click', () => { hint.style.display = 'none'; });
       this.input.touchMode = true;
       this.touch = new TouchControls(this.input, () => this.input.releaseTouch(), () => {
         this.player.setThirdPerson(!this.player.thirdPerson);

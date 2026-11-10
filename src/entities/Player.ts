@@ -53,8 +53,10 @@ interface LockTarget {
 
 /** 1인칭 플레이어 (레이븐) — 펄스 라이플 / Shift 달리기 / 우클릭 펄스 로켓 / E 치유 필드 / Q 전술 조준 */
 /** 상세 1인칭 모델 배치: 가슴 높이로 든 자세를 조준 높이까지 올리고(오른쪽·위·앞), 총구를 화면 중앙 쪽으로 살짝 돌린다 */
-const FP_DETAIL_BASE = new Vector3(0.04, 0.125, -0.19);
-const FP_DETAIL_YAW = 0.1;
+const FP_DETAIL_BASE = new Vector3(0.0, 0.125, -0.19);
+// Keep the barrel parallel to the view axis. Shots travel from the muzzle to the crosshair, so a barrel that is
+// turned inward (it was 0.1 rad) makes every bolt leave the gun at a visible angle.
+const FP_DETAIL_YAW = 0;
 /** 3인칭 카메라: 눈에서 오른쪽·위로 옮긴 축, 뒤로 물러나는 거리(m) */
 const TP_SIDE = 0.5;
 const TP_UP = 0.15;
