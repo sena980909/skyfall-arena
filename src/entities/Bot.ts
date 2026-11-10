@@ -22,6 +22,8 @@ export interface BotOptions {
   hpMult?: number;
   scale?: number;
   boss?: boolean;
+  /** 돌입: 멀리서 쏘지 않고 가까이(3~6m) 파고든다 */
+  rush?: boolean;
 }
 
 /** 봇 손 라이플 오프셋 (월드 미터/라디안). 브라우저에서 튜닝 후 반영 */
@@ -89,6 +91,9 @@ export class Bot implements Hittable, Healable {
   private pathIdx = 0;
   private nextRepath = 0;
   private strafeDir = 1;
+  /** 교전 거리(이보다 멀면 다가가고, 가까우면 물러난다) */
+  private engageMin = ENGAGE_MIN;
+  private engageMax = ENGAGE_MAX;
   private nextStrafeFlip = 0;
   private stuckTimer = 0;
   /** 경로 추종 중 누적 끼임 시간: 반복되면 근처 지점으로 우회 */
@@ -217,6 +222,10 @@ export class Bot implements Hittable, Healable {
     const scale = opts.scale ?? 1;
     this.scale = scale;
     this.isBoss = opts.boss ?? false;
+    if (opts.rush) {
+      this.engageMin = 3;
+      this.engageMax = 6;
+    }
     this.ctrl = new CharacterController(ctx.map.colliders);
     this.ctrl.radius = 0.4 * scale;
     this.ctrl.height = 1.8 * scale;
@@ -1436,7 +1445,7 @@ export class Bot implements Hittable, Healable {
     const heightGap = ctx.player.position.y - this.ctrl.pos.y;
 
     // 멀거나, 플레이어가 높은 곳에 있으면 경로로 접근
-    if (dist > ENGAGE_MAX || heightGap > 1.5) {
+    if (dist > this.engageMax || heightGap > 1.5) {
       if (ctx.now >= this.nextRepath) {
         this.nextRepath = ctx.now + 0.5;
         this.setPathTo(ctx.player.position);
@@ -1444,7 +1453,7 @@ export class Bot implements Hittable, Healable {
       this.followPath(dt, speed);
       return;
     }
-    if (dist < ENGAGE_MIN && !this.isBoss) {
+    if (dist < this.engageMin && !this.isBoss) {
       this.wish.copy(toP).multiplyScalar(-speed * 0.8);
       this.moveDir.copy(toP).negate();
       const moved = this.ctrl.moveAndSlide(dt, this.wish);

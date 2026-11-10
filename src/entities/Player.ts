@@ -117,6 +117,8 @@ export class Player implements Hittable, Healable {
   private prevVelY = 0;
   private rocketKick = 0;
   sprinting = false;
+  /** 임무의 운반물을 들고 있는가(Mission이 켜고 끈다). 들고 있는 동안은 달릴 수 없다 */
+  carrying = false;
   /** 뷰모델 전용 렌더 레이어 (벽 뚫림 방지용 2패스) */
   static readonly VIEWMODEL_LAYER = 1;
   /** 뷰모델 전용 FOV(월드 FOV와 분리해 팔·총이 과장되지 않게) */
@@ -566,7 +568,7 @@ export class Player implements Hittable, Healable {
     const f = (input.isDown('KeyW') ? 1 : 0) - (input.isDown('KeyS') ? 1 : 0);
     const r = (input.isDown('KeyD') ? 1 : 0) - (input.isDown('KeyA') ? 1 : 0);
     const firing = input.mouseDown[0] || now < this.rocketKickUntil;
-    this.sprinting = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && f > 0 && this.ctrl.onGround && !firing;
+    this.sprinting = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && f > 0 && this.ctrl.onGround && !firing && !this.carrying;
     const speed = this.hero.moveSpeed * (this.sprinting ? ab.sprint.speedMult : 1);
     this.wish.set(0, 0, 0).addScaledVector(this.forward, f).addScaledVector(this.right, r);
     if (this.wish.lengthSq() > 0) this.wish.normalize().multiplyScalar(speed);
