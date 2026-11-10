@@ -28,6 +28,10 @@ import type { Hittable } from '@/combat/Hitscan';
 type GameState = 'menu' | 'playing' | 'paused' | 'dead' | 'ended';
 
 const FIXED_DT = 1 / 60;
+// Fill light (sky hemisphere + environment map). Outdoors it is kept low so the sunlit and shaded sides of props differ
+// clearly; inside the control block the sun never reaches, so the fill goes back up as the camera enters.
+const FILL_OUT = { hemi: 0.42, env: 0.7 };
+const FILL_IN = { hemi: 0.62, env: 1.0 };
 /** 뷰모델(총·팔) 전용 수직 FOV */
 
 export class Game {
@@ -41,6 +45,8 @@ export class Game {
   private readonly map = new GreyboxMap();
   private nav: NavGrid;
   private sun!: DirectionalLight;
+  private hemi!: HemisphereLight;
+  private indoor = 0;
   private readonly player: Player;
   private readonly bots: Bot[] = [];
   private readonly packs: HealthPack[] = [];
@@ -88,7 +94,7 @@ export class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.22;
+    this.renderer.toneMappingExposure = 1.2;
     container.appendChild(this.renderer.domElement);
 
     this.camera = new PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 400);
@@ -103,8 +109,9 @@ export class Game {
     this.scene.fog = new Fog(0x9fc5ff, 60, 240);
 
     // 늦은 오후 느낌: 낮고 따뜻한 해 + 약한 하늘빛. 해가 닿는 면과 그늘의 대비가 커지고 그림자가 길어진다
-    const hemi = new HemisphereLight(0xd6e6ff, 0x6a5c4c, 0.62);
-    const sun = new DirectionalLight(0xffe0b0, 2.7);
+    const hemi = new HemisphereLight(0xd6e6ff, 0x6a5c4c, FILL_OUT.hemi);
+    const sun = new DirectionalLight(0xffe0b0, 3.3);
+    this.scene.environmentIntensity = FILL_OUT.env;
     sun.position.set(42, 40, 16);
     sun.castShadow = true;
     sun.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
@@ -119,6 +126,7 @@ export class Game {
     sun.layers.enable(Player.VIEWMODEL_LAYER);
     this.scene.add(hemi, sun, sun.target);
     this.sun = sun;
+    this.hemi = hemi;
 
     this.scene.add(this.map.group);
     // 관제동 실내 조명: 점광원은 모든 재질의 셰이더 비용을 올리므로 모바일에서는 넣지 않는다(천장 조명판의 발광만 보인다)
@@ -456,6 +464,10 @@ export class Game {
     this.sun.position.set(sx + 42, 40, sz + 16);
     // The control block cannot be seen from the arena (camera, not player: third person and the death cam move it)
     this.map.setBlockVisible(this.camera.position.z < -32);
+    const inside = this.camera.position.z < -122.3 ? 1 : 0;
+    this.indoor += (inside - this.indoor) * Math.min(1, dt * 5);
+    this.hemi.intensity = FILL_OUT.hemi + (FILL_IN.hemi - FILL_OUT.hemi) * this.indoor;
+    this.scene.environmentIntensity = FILL_OUT.env + (FILL_IN.env - FILL_OUT.env) * this.indoor;
     this.fx.camPos.copy(this.camera.position);
     this.fx.update(dt);
     if (this.post) {

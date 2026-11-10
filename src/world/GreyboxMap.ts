@@ -1,7 +1,8 @@
 import type { Material } from 'three';
 import { applyHueSwap } from '@/render/HueSwap';
 import {
-  Box3, BoxGeometry, CanvasTexture, Color, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PointLight, SRGBColorSpace, Texture, Vector3,
+  Box3, BoxGeometry, BufferGeometry, CanvasTexture, Color, DoubleSide, Float32BufferAttribute, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PointLight,
+  SRGBColorSpace, Texture, Vector3,
 } from 'three';
 
 /** 키트 모듈의 기준 크기 [x 길이, y 높이, z 깊이] — tools/blender/build_map_kit.py와 같은 값 */
@@ -26,6 +27,8 @@ export class GreyboxMap {
   readonly colliders: Box3[] = [];
   /** 외형을 키트 모듈로 바꿀 상자 목록 (충돌·탄 판정은 상자 그대로) */
   private readonly kitTags: KitTag[] = [];
+  /** 접지 그림자를 깔 발자국(바닥에 닿는 상자의 평면 크기). block = 관제동 안 */
+  private readonly footprints: { cx: number; cz: number; sx: number; sz: number; block: boolean }[] = [];
   /** 전체 범위: 남쪽 아레나(z -30..30) + 화물 통로(z -70..-30) + 북쪽 야드(z -121..-70) + 관제동(z -168..-122, 실내) */
   readonly bounds = new Box3(new Vector3(-40, -1, -170), new Vector3(40, 10, 30));
   readonly playerSpawn = new Vector3(0, 0, 26);
@@ -81,7 +84,7 @@ export class GreyboxMap {
   }
 
   /** 박스 추가: cx,cz 중심, y0 바닥 높이, sx,sy,sz 크기 */
-  private addBox(cx: number, y0: number, cz: number, sx: number, sy: number, sz: number, mat: MeshStandardMaterial, solid = true, kind?: string): Mesh {
+  private addBox(cx: number, y0: number, cz: number, sx: number, sy: number, sz: number, mat: MeshStandardMaterial, solid = true, kind?: string, contact = true): Mesh {
     const geo = new BoxGeometry(sx, sy, sz);
     const mesh = new Mesh(geo, mat);
     mesh.position.set(cx, y0 + sy / 2, cz);
@@ -90,6 +93,10 @@ export class GreyboxMap {
     this.target.add(mesh);
     this.meshes.push(mesh);
     if (kind) this.kitTags.push({ mesh, kind, cx, y0, cz, sx, sy, sz });
+    // 바닥에 닿는 단단한 상자는 접지 그림자를 받는다(계단의 단은 한 줄을 통째로 따로 넣는다)
+    if (contact && solid && Math.abs(y0) < 0.011 && sy >= 0.3 && kind !== 'hide' && kind !== 'stairs_e' && kind !== 'stairs_w') {
+      this.footprints.push({ cx, cz, sx, sz, block: this.target === this.blockGroup });
+    }
     if (solid) {
       this.colliders.push(new Box3(new Vector3(cx - sx / 2, y0, cz - sz / 2), new Vector3(cx + sx / 2, y0 + sy, cz + sz / 2)));
     }
@@ -128,6 +135,7 @@ export class GreyboxMap {
         const x = dir * (6 + 0.35 + i * 0.7);
         this.addBox(x, 0, 0, 0.7, h, 4, this.matPlatform, true, i === 0 ? (dir > 0 ? 'stairs_e' : 'stairs_w') : 'hide');
       }
+      this.footprints.push({ cx: dir * 9.15, cz: 0, sx: 6.3, sz: 4, block: false });
     }
 
     // 컨테이너 군 (6 x 2.5 x 2.5)
@@ -162,11 +170,70 @@ export class GreyboxMap {
     this.addBox(19.5, 0, -14.5, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
 
     this.buildNorth();
+    this.buildContactShadows();
 
     // 스폰 마커 (비충돌, 시각 참고용)
     const spawnMat = new MeshStandardMaterial({ color: new Color(0x2f80ff), emissive: 0x1a3f80, roughness: 0.5 });
     const pm = this.addBox(this.playerSpawn.x, 0, this.playerSpawn.z, 2.4, 0.05, 2.4, spawnMat, false);
     pm.castShadow = false;
+  }
+
+  /**
+   * 접지 그림자: 바닥에 닿는 상자마다 발자국 둘레에 바깥으로 옅어지는 어두운 띠를 바닥에 깐다.
+   * 해 그림자만으로는 그늘진 쪽 바닥이 밝아서 소품이 바닥에 얹어 놓은 것처럼 보였다. 화면 공간 AO 대신 미리 만든 띠를 써서
+   * 비용은 드로콜 둘(야외, 관제동)뿐이다. 띠는 넓고 옅은 것 + 좁고 진한 것 두 겹이고, 농도는 정점 알파로 준다.
+   */
+  private buildContactShadows(): void {
+    const LAYERS: [number, number][] = [[1.3, 0.38], [0.42, 0.5]];
+    const SEG = 4;
+    const mat = new MeshBasicMaterial({
+      color: 0x000000, vertexColors: true, transparent: true, depthWrite: false, fog: false, side: DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    for (const inBlock of [false, true]) {
+      const pos: number[] = [];
+      const col: number[] = [];
+      const vert = (x: number, z: number, a: number): void => {
+        pos.push(x, 0.012, z);
+        col.push(0, 0, 0, a);
+      };
+      for (const f of this.footprints) {
+        if (f.block !== inBlock) continue;
+        const hx = f.sx / 2;
+        const hz = f.sz / 2;
+        for (const [m, alpha] of LAYERS) {
+          // 발자국 네 모서리를 돌며 [안쪽 점, 바깥 점] 쌍을 만든다. 모서리는 반지름 m의 사분원
+          const ring: [number, number, number, number][] = [];
+          const corners: [number, number, number][] = [[hx, hz, 0], [-hx, hz, 90], [-hx, -hz, 180], [hx, -hz, 270]];
+          for (const [x, z, a0] of corners) {
+            for (let k = 0; k <= SEG; k++) {
+              const ang = ((a0 + (90 * k) / SEG) * Math.PI) / 180;
+              ring.push([f.cx + x, f.cz + z, f.cx + x + Math.cos(ang) * m, f.cz + z + Math.sin(ang) * m]);
+            }
+          }
+          for (let i = 0; i < ring.length; i++) {
+            const a = ring[i];
+            const b = ring[(i + 1) % ring.length];
+            vert(a[0], a[1], alpha);
+            vert(a[2], a[3], 0);
+            vert(b[2], b[3], 0);
+            if (a[0] !== b[0] || a[1] !== b[1]) {
+              vert(a[0], a[1], alpha);
+              vert(b[2], b[3], 0);
+              vert(b[0], b[1], alpha);
+            }
+          }
+        }
+      }
+      if (!pos.length) continue;
+      const geo = new BufferGeometry();
+      geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
+      geo.setAttribute('color', new Float32BufferAttribute(col, 4));
+      const mesh = new Mesh(geo, mat);
+      mesh.renderOrder = 1;
+      mesh.frustumCulled = false;
+      (inBlock ? this.blockGroup : this.group).add(mesh);
+    }
   }
 
   /** 바닥 추가(충돌 포함). 텍스처 반복을 크기에 맞추기 위해 재질을 따로 둔다 */
@@ -182,10 +249,12 @@ export class GreyboxMap {
     const n = Math.round(height / 0.45);
     for (let i = 0; i < n; i++) {
       const off = 0.35 + i * 0.7;
-      const mesh = this.addBox(topX + dx * off, 0, topZ + dz * off, dx ? 0.7 : width, height - i * 0.45, dx ? width : 0.7, this.matPlatform, true, i === 0 ? undefined : 'hide');
+      const mesh = this.addBox(topX + dx * off, 0, topZ + dz * off, dx ? 0.7 : width, height - i * 0.45, dx ? width : 0.7, this.matPlatform, true, i === 0 ? undefined : 'hide', false);
       // 겉모습은 계단 모듈 하나로 덮는다(첫 단에 달아 둔다)
       if (i === 0) this.kitTags.push({ mesh, kind: 'stairs', cx: topX, y0: 0, cz: topZ, sx: n * 0.7, sy: height, sz: width, yaw: Math.atan2(-dz, dx) });
     }
+    const run = n * 0.7;
+    this.footprints.push({ cx: topX + dx * run / 2, cz: topZ + dz * run / 2, sx: dx ? run : width, sz: dx ? width : run, block: this.target === this.blockGroup });
   }
 
   /**
@@ -235,7 +304,7 @@ export class GreyboxMap {
   private buildNorth(): void {
     // 관문 (닫힌 상태로 시작)
     const gateMat = new MeshStandardMaterial({ color: 0x2a3344, roughness: 0.6, metalness: 0.5 });
-    this.gateMesh = this.addBox(0, 0, -30.5, 8, 6, 1, gateMat, true);
+    this.gateMesh = this.addBox(0, 0, -30.5, 8, 6, 1, gateMat, true, undefined, false);
     this.gateBox = this.colliders[this.colliders.length - 1];
     const stripMat = new MeshStandardMaterial({ color: 0x401008, emissive: 0xff4020, emissiveIntensity: 2.2 });
     for (const y of [-1.2, 0.2, 1.6]) {
