@@ -8,9 +8,12 @@ const WHITE = new Color(0xffffff);
 
 interface Tracer { line: Line; mat: LineBasicMaterial; dieAt: number; life: number }
 interface Spark { mesh: Sprite; mat: SpriteMaterial; dieAt: number; life: number; vel: Vector3; size: number }
-interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dir: Vector3; dist: number; len: number; t: number; speed: number; hitColor: number; sparkCount: number; normal: Vector3 | null }
+interface Bolt { mesh: Mesh; mat: MeshBasicMaterial; from: Vector3; to: Vector3; dir: Vector3; dist: number; len: number; t: number; speed: number; hitColor: number; sparkCount: number; normal: Vector3 | null; ribbon: boolean; glow: Sprite | null }
 interface Decal { mesh: Mesh; mat: MeshBasicMaterial; glow: Mesh; glowMat: MeshBasicMaterial; born: number }
 /** 탄흔 최대 개수(넘으면 가장 오래된 것부터 재사용), 유지 시간, 달아오른 자국이 식는 시간 */
+/** 탄환 리본의 폭(m)과, 보이는 길이 대비 폭의 상한(텍스처 1024×220의 비율) */
+const BOLT_WIDTH = 0.3;
+const BOLT_ASPECT = 0.21;
 const DECAL_MAX = 48;
 const DECAL_LIFE = 9;
 const DECAL_HOT = 0.7;
@@ -56,7 +59,7 @@ export class Fx {
     scene.add(this.grenadeLight);
     this.flashTex = Fx.makeFlashTexture();
     this.dotTex = Fx.makeDotTexture();
-    const pg = new PlaneGeometry(1, 0.3);
+    const pg = new PlaneGeometry(1, BOLT_WIDTH);
     pg.rotateY(-Math.PI / 2); // 폭이 Z축을 따라가도록
     this.boltPlaneGeo = pg;
   }
@@ -133,7 +136,15 @@ export class Fx {
     this.scene.add(mesh);
     const dir = to.clone().sub(from).normalize();
     // 첫 프레임부터 총구 앞에 반 길이쯤 보이도록 시작
-    const b: Bolt = { mesh, mat, from: from.clone(), to: to.clone(), dir, dist, len, t: len * 0.4, speed, hitColor, sparkCount, normal };
+    // 리본은 정면·후면에서 보면 납작해지므로, 머리에 둥근 발광점을 따로 둔다(멀어지는 탄은 빛나는 점으로 보인다)
+    const ribbon = !!this.vfx?.bolt;
+    let glow: Sprite | null = null;
+    if (ribbon) {
+      glow = new Sprite(new SpriteMaterial({ map: this.dotTex, color: new Color(color).lerp(WHITE, 0.35), transparent: true, opacity: 1, blending: AdditiveBlending, depthWrite: false }));
+      glow.scale.set(0.34, 0.34, 1);
+      this.scene.add(glow);
+    }
+    const b: Bolt = { mesh, mat, from: from.clone(), to: to.clone(), dir, dist, len, t: len * 0.4, speed, hitColor, sparkCount, normal, ribbon, glow };
     this.placeBolt(b);
     this.bolts.push(b);
     if (dist < 1.5) {
@@ -391,11 +402,21 @@ export class Fx {
     // lookAt의 up을 (dir × toCam)으로 주면 평면 법선(local X)이 카메라 쪽을 향한다
     this.tmpV.copy(this.camPos).sub(b.mesh.position);
     b.mesh.up.crossVectors(b.dir, this.tmpV);
+    if (b.ribbon) {
+      // 화면에 보이는 길이 = 길이 × sin(진행 방향과 시선 사이 각). 탄이 시선과 거의 나란하면(멀어지거나 다가올 때) 길이는 점처럼 줄어든다.
+      // 폭을 그대로 두면 폭이 길이보다 길어져 진행 방향과 직각인 줄로 보이므로, 폭을 보이는 길이에 맞춰 줄인다.
+      const sin = b.mesh.up.length() / (this.tmpV.length() || 1);
+      b.mesh.scale.y = Math.max(0.09, Math.min(1, (vis * sin * BOLT_ASPECT) / BOLT_WIDTH));
+    }
     if (b.mesh.up.lengthSq() < 1e-6) b.mesh.up.set(0, 1, 0);
     b.mesh.lookAt(this.tmpV2.copy(b.mesh.position).add(b.dir));
     const fadeIn = Math.min(1, tail / 0.4 + 0.5);
     const fadeOut = Math.min(1, (b.dist - b.t) / 2 + 0.2);
     b.mat.opacity = fadeIn * fadeOut;
+    if (b.glow) {
+      b.glow.position.copy(b.from).addScaledVector(b.dir, head);
+      b.glow.material.opacity = fadeIn * fadeOut;
+    }
   }
 
   update(dt: number): void {
@@ -408,6 +429,10 @@ export class Fx {
       if (b.t >= b.dist) {
         this.scene.remove(b.mesh);
         b.mat.dispose();
+        if (b.glow) {
+          this.scene.remove(b.glow);
+          b.glow.material.dispose();
+        }
         for (const c of b.mesh.children) {
           const cm = (c as Mesh).material as MeshBasicMaterial;
           if (cm !== b.mat) cm.dispose();
@@ -522,7 +547,10 @@ export class Fx {
   }
 
   clear(): void {
-    for (const b of this.bolts) this.scene.remove(b.mesh);
+    for (const b of this.bolts) {
+      this.scene.remove(b.mesh);
+      if (b.glow) this.scene.remove(b.glow);
+    }
     for (const f of this.flashes) this.scene.remove(f.sprite);
     for (const im of this.impacts) this.scene.remove(im.sprite);
     for (const m of this.motes) this.scene.remove(m.sprite);
