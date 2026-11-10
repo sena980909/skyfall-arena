@@ -285,7 +285,16 @@ def lamp():
 
 
 # 컨테이너·상자·방벽·단말은 생성 메시가 있으면 그것을 쓴다
-gen_container = generated('kit_container_a', 'prop_container.glb', (6, 2.5, 2.5), tex=1024, max_tris=1800)
+# 컨테이너는 생성 메시의 모양을 쓰지 않는다: 골판과 테두리가 울퉁불퉁하게 나와서, 겉그림만 여섯 면으로 찍어 깨끗한 상자에 입힌다
+CONTAINER_SRC = os.path.join(GEN, 'prop_container.glb')
+gen_container = None
+if USE_GEN and os.path.exists(CONTAINER_SRC):
+    gen_container = BD.project_box(
+        CONTAINER_SRC, 'kit_container_a', (6, 2.5, 2.5),
+        {'yp': (0, 0, 1024, 427), 'zp': (1024, 0, 1024, 427), 'yn': (0, 427, 1024, 427), 'xp': (1024, 427, 427, 427),
+         'xn': (1451, 427, 427, 427), 'zn': (0, 854, 408, 170)},
+        (2048, 1024), PREVIEW, border=0.2, inset=0.08)
+    MODULES.append(gen_container)
 if gen_container:
     # 색 변형은 게임이 텍스처 채널을 바꿔 낸다(GreyboxMap.applyKit): 메시·텍스처는 하나만 싣는다
     for tag in 'bcd':
@@ -295,7 +304,16 @@ else:
     container('b', (0.045, 0.3, 0.34))
     container('c', (0.07, 0.15, 0.42))
     container('d', (0.23, 0.25, 0.28))
-gen_crate = generated('kit_crate', 'prop_crate.glb', (2, 2, 1), max_tris=2600)
+# The crate is a box as well: same projection (straight edges, 108 triangles instead of 2,600 on 40 instances)
+CRATE_SRC = os.path.join(GEN, 'prop_crate.glb')
+gen_crate = None
+if USE_GEN and os.path.exists(CRATE_SRC):
+    gen_crate = BD.project_box(
+        CRATE_SRC, 'kit_crate', (2, 2, 1),
+        {'yp': (0, 0, 512, 256), 'yn': (512, 0, 512, 256), 'xp': (0, 256, 512, 256), 'xn': (512, 256, 512, 256),
+         'zp': (0, 512, 512, 512), 'zn': (512, 512, 256, 256)},
+        (1024, 1024), PREVIEW, border=0.15, inset=0.045)
+    MODULES.append(gen_crate)
 if gen_crate:
     # 높은 상자(2m) = 상자 둘을 쌓은 것. 위 상자는 90° 돌려 같은 면이 겹쳐 보이지 않게 한다
     top = gen_crate.data.copy()
@@ -308,7 +326,7 @@ if gen_crate:
     bm.free()
     bpy.data.meshes.remove(top)
     for p in tall.polygons:
-        p.use_smooth = True
+        p.use_smooth = False
     tall.materials.append(gen_crate.data.materials[0])
     ob = bpy.data.objects.new('kit_crate_tall', tall)
     bpy.context.scene.collection.objects.link(ob)
@@ -316,7 +334,7 @@ if gen_crate:
 else:
     crate(1.0, 'kit_crate')
     crate(2.0, 'kit_crate_tall')
-if not generated('kit_barrier', 'prop_barrier.glb', (6, 0.6, 1.1), tex=1024, max_tris=1500):
+if not generated('kit_barrier', 'prop_barrier.glb', (6, 0.6, 1.1), tex=1024):
     barrier()
 # 임무 단말(중계기·신호기·전송 단말): 충돌 상자가 없어 비율을 그대로 둔다. 기준 높이 2m, 게임이 높이에 맞춰 줄인다
 generated('kit_console', 'prop_console.glb', (0.9, 0.9, 2.0), uniform=True)

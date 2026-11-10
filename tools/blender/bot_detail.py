@@ -3,6 +3,7 @@
 # - 그래서 (1) 크기·방향·위치를 절차 메시에 맞춰 정렬하고 (2) 각 정점에서 가장 가까운 절차 메시 면의 본을 물려받는다.
 #   본·애니메이션은 그대로 쓰고 겉모습만 바뀐다. 관절 경계는 가중치를 이웃과 섞어 부드럽게 한다.
 import math
+import os
 
 import bmesh
 import bpy
@@ -445,6 +446,142 @@ def import_static(path, name, size, yaw=0.0, tex_size=512, material_name=None, u
     ob.vertex_groups.clear()
     kmin = min(k)
     print('STATIC', name, 'TRIS', sum(len(p.vertices) - 2 for p in me.polygons), 'TURN', turn, 'STRETCH', tuple(round(v / kmin, 2) for v in k))
+    return ob
+
+
+# 상자 면: 이름 → (법선, 화면 오른쪽, 화면 위). 카메라는 법선 쪽 바깥에서 안을 본다
+BOX_FACES = {
+    'yp': (Vector((0, 1, 0)), Vector((-1, 0, 0)), Vector((0, 0, 1))),
+    'yn': (Vector((0, -1, 0)), Vector((1, 0, 0)), Vector((0, 0, 1))),
+    'xp': (Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))),
+    'xn': (Vector((-1, 0, 0)), Vector((0, -1, 0)), Vector((0, 0, 1))),
+    'zp': (Vector((0, 0, 1)), Vector((1, 0, 0)), Vector((0, 1, 0))),
+    'zn': (Vector((0, 0, -1)), Vector((-1, 0, 0)), Vector((0, 1, 0))),
+}
+
+
+def project_box(path, name, size, rects, atlas, tmp_dir, border=0.2, inset=0.07):
+    """상자 모양 소품: 생성 메시의 모양은 버리고 겉그림만 쓴다.
+
+    이미지→3D 메시는 수천 면으로는 평평한 면과 곧은 모서리를 못 만든다(골판이 울퉁불퉁하고 테두리가 녹은 것처럼 휜다).
+    그래서 생성 메시를 여섯 방향에서 직교 투영으로 찍어 한 장(atlas)에 모으고, 깨끗한 상자(테두리 + 안으로 들어간 판)에 입힌다.
+    size = (X 길이, Y 깊이, Z 높이), rects = {면 이름: (x, y, w, h)} 아틀라스 안의 자리(픽셀, 왼쪽 아래 기준),
+    atlas = (W, H). 재질 이름은 '<name>_gen'.
+    """
+    import numpy as np
+    src = import_static(path, name + '_src', size, tex_size=4096, material_name=name + '_srcmat')
+    mat = src.data.materials[0]
+    bsdf = next(n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+    links = bsdf.inputs['Base Color'].links
+    assert links, 'no base colour texture'
+    mat.node_tree.nodes.active = links[0].from_node  # Workbench는 활성 이미지 노드를 그린다
+
+    sc = bpy.context.scene
+    keep = (sc.render.engine, sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage, sc.camera, sc.world,
+            sc.view_settings.view_transform, sc.render.film_transparent, sc.render.filepath)
+    hidden = {o: o.hide_render for o in sc.objects}
+    for o in sc.objects:
+        o.hide_render = o is not src
+    sc.render.engine = 'BLENDER_WORKBENCH'
+    sc.display.shading.light = 'FLAT'
+    sc.display.shading.color_type = 'TEXTURE'
+    sc.display.render_aa = '8'
+    sc.view_settings.view_transform = 'Standard'
+    sc.render.film_transparent = False
+    sc.render.resolution_percentage = 100
+    world = bpy.data.worlds.new('bake_world')
+    world.color = (0.02, 0.022, 0.028)
+    sc.world = world
+    cam_d = bpy.data.cameras.new('bake_cam')
+    cam_d.type = 'ORTHO'
+    cam = bpy.data.objects.new('bake_cam', cam_d)
+    sc.collection.objects.link(cam)
+    sc.camera = cam
+
+    centre = Vector((0, 0, size[2] / 2))
+    half = Vector((size[0] / 2, size[1] / 2, size[2] / 2))
+    W, H = atlas
+    pixels = np.zeros((H, W, 4), dtype=np.float32)
+    pixels[:, :, 3] = 1.0
+    extent = {}
+    for face, (x0, y0, w, h) in rects.items():
+        n, right, up = BOX_FACES[face]
+        fw = 2 * abs(right.dot(half))
+        fh = 2 * abs(up.dot(half))
+        extent[face] = (fw, fh)
+        cam.location = centre + n * (abs(n.dot(half)) + 5.0)
+        cam.rotation_euler = Matrix((right, up, n)).transposed().to_euler()
+        cam_d.ortho_scale = max(fw, fh)
+        cam_d.clip_start = 0.1
+        cam_d.clip_end = 50
+        sc.render.resolution_x = w
+        sc.render.resolution_y = h
+        sc.render.filepath = os.path.join(tmp_dir, f'_bake_{name}_{face}.png')
+        bpy.ops.render.render(write_still=True)
+        img = bpy.data.images.load(sc.render.filepath)
+        arr = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, 4)
+        pixels[y0:y0 + h, x0:x0 + w, :3] = arr[:, :, :3]
+        bpy.data.images.remove(img)
+        os.remove(sc.render.filepath)
+
+    (sc.render.engine, sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage, sc.camera, sc.world,
+     sc.view_settings.view_transform, sc.render.film_transparent, sc.render.filepath) = keep
+    for o, hgt in hidden.items():
+        if o.name in bpy.data.objects:
+            o.hide_render = hgt
+    bpy.data.objects.remove(cam, do_unlink=True)
+    bpy.data.worlds.remove(world)
+    for im in [n.image for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image]:
+        bpy.data.images.remove(im)
+    bpy.data.objects.remove(src, do_unlink=True)
+
+    tex = bpy.data.images.new(name + '_atlas', W, H, alpha=False)
+    tex.pixels.foreach_set(pixels.ravel())
+    tex.pack()
+
+    # ---- 깨끗한 상자: 면마다 테두리(겉면) + 안으로 들어간 판
+    bm = bmesh.new()
+    uv = bm.loops.layers.uv.new('UVMap')
+    for face, (x0, y0, w, h) in rects.items():
+        n, right, up = BOX_FACES[face]
+        fw, fh = extent[face]
+        origin = centre + n * abs(n.dot(half))
+
+        def pt(a, b, depth=0.0):
+            return bm.verts.new(origin + right * (a - fw / 2) + up * (b - fh / 2) - n * depth), (a / fw, b / fh)
+
+        def quad(c):
+            f = bm.faces.new([v for v, _ in c])
+            for loop, (_, (u, v)) in zip(f.loops, c):
+                # 이웃 그림이 번져 들어오지 않게 가장자리 2픽셀은 쓰지 않는다
+                loop[uv].uv = ((x0 + 2 + u * (w - 4)) / W, (y0 + 2 + v * (h - 4)) / H)
+
+        b = min(border, fw / 4, fh / 4)
+        ring = lambda m, dep: [pt(m, m, dep), pt(fw - m, m, dep), pt(fw - m, fh - m, dep), pt(m, fh - m, dep)]
+        outer, lip, panel = ring(0.0, 0.0), ring(b, 0.0), ring(b, inset)
+        for i in range(4):
+            j = (i + 1) % 4
+            quad([outer[i], outer[j], lip[j], lip[i]])
+            quad([lip[i], lip[j], panel[j], panel[i]])
+        quad(panel)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    for p in me.polygons:
+        p.use_smooth = False
+    out = bpy.data.materials.new(name + '_gen')
+    out.use_nodes = True
+    ob_bsdf = next(n for n in out.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+    node = out.node_tree.nodes.new('ShaderNodeTexImage')
+    node.image = tex
+    out.node_tree.links.new(node.outputs['Color'], ob_bsdf.inputs['Base Color'])
+    ob_bsdf.inputs['Metallic'].default_value = 0.25
+    ob_bsdf.inputs['Roughness'].default_value = 0.6
+    me.materials.append(out)
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    print('PROJECTED', name, 'TRIS', sum(len(p.vertices) - 2 for p in me.polygons), 'ATLAS', atlas)
     return ob
 
 
