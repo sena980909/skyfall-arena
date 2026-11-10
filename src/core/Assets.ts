@@ -45,6 +45,12 @@ export interface LoadedAssets {
 export const ASSET_BASE = import.meta.env.BASE_URL.replace(/\/$/, '') + '/assets/';
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, '') + '/assets/';
+/**
+ * Asset files keep their names across deploys and the host caches them for 10 minutes, so right after a deploy the new
+ * code could run with an old model (e.g. a rig without the clips the code expects). The build stamp makes each deploy
+ * fetch its own copy.
+ */
+export const ASSET_VER = '?v=' + __BUILD__.replace(/\D/g, '');
 
 /** 레이븐 애니메이션 클립 파일 (M3: 힉스필드 리깅 결과) */
 export const RAVEN_CLIPS: Record<string, string> = {
@@ -127,7 +133,7 @@ export function applyDetailTextures(root: Object3D, d: DetailTextures): void {
 
 async function exists(url: string): Promise<boolean> {
   try {
-    const r = await fetch(url, { method: 'HEAD' });
+    const r = await fetch(url + ASSET_VER, { method: 'HEAD' });
     // 개발 서버의 SPA 폴백(index.html)을 존재로 오인하지 않도록
     const ct = r.headers.get('content-type') ?? '';
     return r.ok && !ct.includes('text/html');
@@ -139,7 +145,7 @@ async function exists(url: string): Promise<boolean> {
 async function loadTexture(loader: TextureLoader, url: string, repeat?: [number, number]): Promise<Texture | null> {
   if (!(await exists(url))) return null;
   try {
-    const t = await loader.loadAsync(url);
+    const t = await loader.loadAsync(url + ASSET_VER);
     t.colorSpace = SRGBColorSpace;
     if (repeat) {
       t.wrapS = t.wrapT = RepeatWrapping;
@@ -156,7 +162,7 @@ async function loadTexture(loader: TextureLoader, url: string, repeat?: [number,
 async function loadGltf(loader: GLTFLoader, url: string): Promise<GLTF | null> {
   if (!(await exists(url))) return null;
   try {
-    return await loader.loadAsync(url);
+    return await loader.loadAsync(url + ASSET_VER);
   } catch (e) {
     console.warn('[Assets] gltf failed', url, e);
     return null;

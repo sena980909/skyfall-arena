@@ -152,9 +152,11 @@ export class AudioBank {
   }
 
   async load(baseUrl: string): Promise<number> {
+    // Same cache-busting stamp as the models (Assets.ASSET_VER): clips are re-cut under the same file names
+    const ver = '?v=' + __BUILD__.replace(/\D/g, '');
     let manifest: Partial<Record<SfxName, ClipSpec | ClipSpec[]>>;
     try {
-      const r = await fetch(`${baseUrl}sfx/manifest.json`);
+      const r = await fetch(`${baseUrl}sfx/manifest.json${ver}`);
       if (!r.ok || (r.headers.get('content-type') ?? '').includes('text/html')) return 0;
       manifest = (await r.json()) as Partial<Record<SfxName, ClipSpec | ClipSpec[]>>;
     } catch {
@@ -169,7 +171,7 @@ export class AudioBank {
       entries.map(async ([name, spec, order]) => {
         try {
           const file = typeof spec === 'string' ? spec : spec.file;
-          const res = await fetch(`${baseUrl}sfx/${file}`);
+          const res = await fetch(`${baseUrl}sfx/${file}${ver}`);
           if (!res.ok) return;
           let buf = await this.ctx.decodeAudioData(await res.arrayBuffer());
           if (typeof spec !== 'string') buf = this.cut(buf, spec.from, spec.to);
