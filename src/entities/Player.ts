@@ -1,7 +1,8 @@
 import {
   Box3, BoxGeometry, CapsuleGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera,
-  SphereGeometry, Vector3, MathUtils,
+  SphereGeometry, Vector3, MathUtils, LoopOnce, AnimationMixer,
 } from 'three';
+import type { AnimationAction, AnimationClip } from 'three';
 import { CharacterController } from './CharacterController';
 import { Weapon } from '@/combat/Weapon';
 import { GRAVITY, RAVEN } from '@/data/heroes';
@@ -100,6 +101,11 @@ export class Player implements Hittable, Healable {
   /** 뷰모델 전용 FOV(월드 FOV와 분리해 팔·총이 과장되지 않게) */
   static readonly VIEWMODEL_FOV = 56;
   private readonly eyeHeight = 1.6;
+  private fpRigActive = false;
+  private fpMixer: AnimationMixer | null = null;
+  private fpIdle: AnimationAction | null = null;
+  private fpReload: AnimationAction | null = null;
+  private fpReloadBlend = 0;
   /** 사망 카메라: 쓰러지는 시간(초, -1이면 비활성), 기울 방향, 처치자 쪽 요 */
   private deathT = -1;
   private deathRoll = 0;
@@ -187,6 +193,70 @@ export class Player implements Hittable, Healable {
    * 힉스필드 생성 1인칭 팔+라이플 일체형 모델로 뷰모델 교체.
    * 주축 정렬(총열 -Z, 위 +Y) 후 총구는 맨 앞 지점. 라이플 단독 뷰모델은 숨긴다.
    */
+  /**
+   * Blender 제작 1인칭 리그 적용. 리그는 카메라 공간 기준으로 만들어져 있어(원점=눈, -Z 정면) 뷰모델 원점에 그대로 붙인다.
+   * 재장전은 클립 시간을 무기의 재장전 진행도에 직접 맞춘다(게임 로직과 모션이 항상 일치).
+   */
+  applyFpRig(scene: Group, clips: AnimationClip[]): void {
+    if (this.rifleHolder) this.rifleHolder.visible = false;
+    for (const c of [...this.viewmodel.children]) if (c !== this.muzzle) c.visible = false;
+    this.vmBase.set(0, 0, 0);
+    this.viewmodel.position.set(0, 0, 0);
+    this.viewmodel.rotation.set(0, 0, 0);
+    this.viewmodel.add(scene);
+    const muzzleBone = scene.getObjectByName('muzzle');
+    if (muzzleBone) {
+      this.muzzle.parent?.remove(this.muzzle);
+      muzzleBone.add(this.muzzle);
+      this.muzzle.position.set(0, 0, 0);
+    }
+    this.fpMixer = new AnimationMixer(scene);
+    const find = (n: string): AnimationClip | undefined => clips.find((c) => c.name === n);
+    const idle = find('idle');
+    const reload = find('reload');
+    if (idle) {
+      this.fpIdle = this.fpMixer.clipAction(idle);
+      this.fpIdle.play();
+    }
+    if (reload) {
+      this.fpReload = this.fpMixer.clipAction(reload);
+      this.fpReload.setLoop(LoopOnce, 1);
+      this.fpReload.clampWhenFinished = true;
+      this.fpReload.play();
+      this.fpReload.setEffectiveWeight(0);
+    }
+    this.fpRigActive = true;
+    this.viewmodel.traverse((o) => {
+      o.layers.set(Player.VIEWMODEL_LAYER);
+      o.frustumCulled = false; // 스킨 메시의 바운딩이 레스트 포즈 기준이라 화면에 있어도 컬링될 수 있다
+      const m = o as Mesh;
+      if (m.isMesh) {
+        m.castShadow = false;
+        m.receiveShadow = false;
+        // 밝은 하늘 환경맵 반사로 색이 하얗게 뜨지 않게, 발광은 과하지 않게
+        for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+          const sm = mat as MeshStandardMaterial;
+          sm.envMapIntensity = 0.35;
+          if (sm.emissiveIntensity > 1) sm.emissiveIntensity = 1.4;
+        }
+      }
+    });
+    console.info(`[Gun] 1인칭 리그 적용: 클립 ${clips.map((c) => c.name).join(', ')}`);
+  }
+
+  /** 리그 클립 갱신: 대기는 흐르고, 재장전은 진행도에 맞춰 스크럽 */
+  private updateFpRig(dt: number, now: number): void {
+    if (!this.fpMixer) return;
+    const reloading = this.weapon.reloading;
+    this.fpReloadBlend += ((reloading ? 1 : 0) - this.fpReloadBlend) * Math.min(1, dt * 14);
+    if (this.fpReload) {
+      if (reloading) this.fpReload.time = this.weapon.reloadProgress(now) * this.fpReload.getClip().duration;
+      this.fpReload.setEffectiveWeight(this.fpReloadBlend);
+    }
+    if (this.fpIdle) this.fpIdle.setEffectiveWeight(1 - this.fpReloadBlend);
+    this.fpMixer.update(dt);
+  }
+
   applyFpArmsModel(model: Group): void {
     // 모델의 Y업을 그대로 두고 총열 요만 -Z로 맞춘다(팔 때문에 롤이 생기지 않음)
     const { group: holder, muzzle, yawErrorDeg } = buildAlignedGun(model, FP_ARMS_LENGTH, true);
@@ -452,14 +522,17 @@ export class Player implements Hittable, Healable {
     const bRoll = Math.sin(this.bob) * 0.035 * a * bobScale;
     const breathe = Math.sin(now * 1.7) * 0.0035 * (1 - Math.min(1, a));
     const air = this.ctrl.onGround ? 0 : clamp(-this.ctrl.vel.y * 0.004, -0.035, 0.035);
-    const reloadDip = this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
+    // 리그가 있으면 재장전은 클립이 담당하므로 뷰모델 통째 기울이기는 끈다
+    const reloadDip = !this.fpRigActive && this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
+    this.updateFpRig(dt, now);
 
     // 재장전: 총구를 살짝 내리고 몸쪽으로 당기며 안쪽으로 굴린다 (위로 들면 카메라 앞 전완 절단면이 화면에 올라온다)
     vm.position.x = this.vmBase.x + bx + this.swayX * 0.25 + sb * 0.03 + reloadDip * 0.04;
     vm.position.y = this.vmBase.y + by + breathe + air - this.landKick * 0.6 - reloadDip * 0.02 - sb * 0.04 - this.rocketKick * 0.03;
-    vm.position.z = this.vmBase.z + this.recoil * 0.07 + this.rocketKick * 0.2 + sb * 0.03 + reloadDip * 0.05;
+    const rk = this.fpRigActive ? 0.4 : 1; // 리그는 카메라 원점이 피벗이라 같은 반동도 크게 보인다
+    vm.position.z = this.vmBase.z + this.recoil * 0.07 * rk + this.rocketKick * 0.2 * rk + sb * 0.03 + reloadDip * 0.05;
     // 로켓 반동은 위로 들기보다 뒤로 밀기 위주 (위로 들면 카메라 앞 전완 절단면이 보인다)
-    vm.rotation.x = this.recoil * 0.12 + this.rocketKick * 0.08 + reloadDip * 0.0 + this.swayY - sb * 0.14 - this.landKick * 1.2;
+    vm.rotation.x = this.recoil * 0.12 * rk + this.rocketKick * 0.08 + reloadDip * 0.0 + this.swayY - sb * 0.14 * (this.fpRigActive ? 0.8 : 1) - this.landKick * 1.2;
     vm.rotation.y = this.swayX + sb * 0.28 + reloadDip * 0.14;
     vm.rotation.z = bRoll + this.strafeTilt + reloadDip * 0.35 + sb * 0.18;
   }

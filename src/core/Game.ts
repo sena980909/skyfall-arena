@@ -155,7 +155,8 @@ export class Game {
       }
       this.map.applyTextures(a.floor, a.container);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
-      if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
+      if (a.fpRig) this.player.applyFpRig(a.fpRig.scene, a.fpRig.clips);
+      else if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
       this.fx.setTextures(a.vfx);
       this.warmupShaders(a);
       const clips = await this.sfx.loadBank(ASSET_BASE, this.camera);

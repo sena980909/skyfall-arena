@@ -4,3 +4,5 @@ dist
 tools/.backup
 
 .claude/launch.json
+assets_src/_preview
+*.blend1

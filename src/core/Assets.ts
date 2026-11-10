@@ -27,6 +27,8 @@ export interface LoadedAssets {
   rifle: Group | null;
   /** 1인칭 팔+라이플 일체형 뷰모델 (힉스필드 생성). 없으면 라이플 단독 뷰모델 */
   fpArms: Group | null;
+  /** Blender로 직접 만든 1인칭 팔+라이플 리그(스킨 메시 + idle/reload 클립). 있으면 fpArms 대신 쓴다 */
+  fpRig: { scene: Group; clips: AnimationClip[] } | null;
   vfx: VfxTextures;
 }
 
@@ -123,10 +125,10 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const [ravenBase, rifleGltf, fpArmsGltf, ...clipGltfs] = await Promise.all([
+  const [ravenBase, rifleGltf, fpRigGltf, ...clipGltfs] = await Promise.all([
     loadGltf(gl, BASE + 'models/raven.glb'),
     loadGltf(gl, BASE + 'models/pulse_rifle.glb'),
-    loadGltf(gl, BASE + 'models/fp_arms.glb'),
+    loadGltf(gl, BASE + 'models/fp_rig.glb'),
     ...Object.values(RAVEN_CLIPS).map((f) => loadGltf(gl, BASE + f)),
   ]);
 
@@ -157,7 +159,10 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
 
   const rifle = rifleGltf ? rifleGltf.scene : null;
   rifle?.traverse((o) => (o.castShadow = true));
+  // 이전 방식(이미지→3D 덩어리 메시)은 새 리그가 없을 때만 내려받는다
+  const fpArmsGltf = fpRigGltf ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
   const fpArms = fpArmsGltf ? fpArmsGltf.scene : null;
 
-  return { sky, floor, container, raven, rifle, fpArms, vfx: { muzzle, bolt, impact, flashBurst } };
+  const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
+  return { sky, floor, container, raven, rifle, fpArms, fpRig, vfx: { muzzle, bolt, impact, flashBurst } };
 }
