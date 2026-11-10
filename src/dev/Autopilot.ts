@@ -236,13 +236,15 @@ export class Autopilot implements PlayerInput {
       return;
     }
     if (now < this.detourUntil && this.detourGoal) goal = this.detourGoal;
-    if (!goal && p.hp < 120) {
+    // 제한 시간 탈출 중에는 힐팩을 찾아다니지 않는다(맞으면서 팩 사이를 오가다 시간을 다 쓴 판이 있었다). 거의 죽을 때 가까운 것만 집는다
+    const urgent = !!this.objective?.urgent;
+    if (!goal && p.hp < (urgent ? 50 : 120)) {
       let best: HealthPack | null = null;
       let bd = Infinity;
       for (const pk of ctx.packs) {
         if (!pk.active) continue;
         const d = pk.position.distanceTo(p.position);
-        if (d < bd && d < 45) {
+        if (d < bd && d < (urgent ? 15 : 45)) {
           bd = d;
           best = pk;
         }

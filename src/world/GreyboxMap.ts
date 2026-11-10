@@ -9,7 +9,7 @@ const KIT_REF: Record<string, [number, number, number]> = {
   container: [6, 2.5, 2.5], crate: [2, 1, 2], crate_tall: [2, 2, 2], barrier: [6, 1.1, 0.6],
   deck: [12, 0.4, 12], pillar: [1, 3.6, 1], rail: [12, 1, 0.3], wall: [8, 6, 1],
 };
-interface KitTag { mesh: Mesh; kind: string; cx: number; y0: number; cz: number; sx: number; sy: number; sz: number }
+interface KitTag { mesh: Mesh; kind: string; cx: number; y0: number; cz: number; sx: number; sy: number; sz: number; yaw?: number }
 
 /**
  * 스카이독(SKYDOCK) 그레이박스 — GDD 6장 레이아웃을 프리미티브로.
@@ -39,7 +39,7 @@ export class GreyboxMap {
     { pos: new Vector3(30, 0, 16), big: false },
     { pos: new Vector3(6.5, 0, -64), big: false },
     { pos: new Vector3(0, 0, -113), big: true },
-    { pos: new Vector3(-26, 0, -88), big: false },
+    { pos: new Vector3(-28, 1.35, -98.5), big: false },
     { pos: new Vector3(26, 0, -102), big: false },
     { pos: new Vector3(-21, 0, -159), big: false },
   ];
@@ -142,6 +142,9 @@ export class GreyboxMap {
     this.addBox(24, 0, -22, 6, 2.5, 2.5, this.matContainer, true, 'container');
     this.addBox(-24, 0, 22, 6, 2.5, 2.5, this.matContainer, true, 'container');
     this.addBox(24, 0, 22, 6, 2.5, 2.5, this.matContainer, true, 'container');
+    // 2단으로 쌓은 컨테이너(위 것은 조금 어긋나게): 한 층짜리만 있으면 장면이 납작해 보인다
+    this.addBox(-23.2, 2.5, -22, 6, 2.5, 2.5, this.matContainer, true, 'container');
+    this.addBox(23.2, 2.5, 22, 6, 2.5, 2.5, this.matContainer, true, 'container');
 
     // 낮은 엄폐벽 (1.1m)
     this.addBox(0, 0, -9, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
@@ -174,6 +177,60 @@ export class GreyboxMap {
     this.extraFloors.push({ mat, sx, sz });
   }
 
+  /** 계단 한 줄: (topX, topZ) = 단 위쪽 가장자리의 가운데, (dx, dz) = 내려가는 방향(축 방향 단위 벡터). 0.45m 단, 0.7m 디딤 */
+  private addStairs(topX: number, topZ: number, dx: number, dz: number, height: number, width: number): void {
+    const n = Math.round(height / 0.45);
+    for (let i = 0; i < n; i++) {
+      const off = 0.35 + i * 0.7;
+      const mesh = this.addBox(topX + dx * off, 0, topZ + dz * off, dx ? 0.7 : width, height - i * 0.45, dx ? width : 0.7, this.matPlatform, true, i === 0 ? undefined : 'hide');
+      // 겉모습은 계단 모듈 하나로 덮는다(첫 단에 달아 둔다)
+      if (i === 0) this.kitTags.push({ mesh, kind: 'stairs', cx: topX, y0: 0, cz: topZ, sx: n * 0.7, sy: height, sz: width, yaw: Math.atan2(-dz, dx) });
+    }
+  }
+
+  /**
+   * 야드의 높낮이: 전부 한 층에 낱개로 놓여 있어 납작해 보이던 것을 고친다.
+   *   서쪽 하역장(1.35m 단, 계단 둘) · 2단 컨테이너 셋 · 상자 무더기 · 신호기 위를 가로지르는 갠트리 크레인(다리 넷, 매달린 컨테이너).
+   * 크레인 보와 매달린 컨테이너는 4.5m 위라 길찾기와 이동에는 영향이 없다(탄은 막는다).
+   */
+  private buildYardHeights(): void {
+    // 서쪽 하역장: x -30..-21.5, z -101..-89, 윗면 1.35m. 동쪽(신호기 쪽)과 남쪽에 계단
+    this.addBox(-25.75, 0, -95, 8.5, 0.95, 12, this.matPlatform);
+    for (const [x, z, sx, sz] of [[-21.47, -95, 0.06, 12], [-25.75, -88.97, 8.5, 0.06]] as [number, number, number, number][]) {
+      const trim = this.addBox(x, 0.72, z, sx, 0.16, sz, this.matAccent, false);
+      trim.castShadow = false;
+    }
+    this.addBox(-25.75, 0.95, -95, 8.5, 0.4, 12, this.matPlatform, true, 'deck');
+    this.addStairs(-21.5, -95, 1, 0, 1.35, 4);
+    this.addStairs(-25.5, -89, 0, 1, 1.35, 4);
+    this.addBox(-25.75, 1.35, -100.85, 8.5, 1.0, 0.3, this.matAccent, true, 'rail');
+    this.addBox(-22.1, 1.35, -99, 0.6, 1.1, 3, this.matCrate, true, 'barrier');
+    this.addBox(-28.5, 1.35, -91, 2, 1.0, 2, this.matCrate, true, 'crate');
+    // 2단 컨테이너: 기존 둘 위에 하나씩, 동쪽 벽 앞에 새로 한 쌍
+    this.addBox(15.2, 2.5, -108, 6, 2.5, 2.5, this.matContainer, true, 'container');
+    this.addBox(-16.8, 2.5, -82, 6, 2.5, 2.5, this.matContainer, true, 'container');
+    this.addBox(27.5, 0, -91.5, 2.5, 2.5, 6, this.matContainer, true, 'container');
+    this.addBox(27.5, 2.5, -92.3, 2.5, 2.5, 6, this.matContainer, true, 'container');
+    // 상자 무더기: 높은 상자 옆에 낮은 상자(밟고 올라가는 단), 컨테이너 위에 얹은 상자
+    this.addBox(-20, 0, -78, 2, 1.0, 2, this.matCrate, true, 'crate');
+    this.addBox(20, 0, -114, 2, 1.0, 2, this.matCrate, true, 'crate');
+    this.addBox(18, 2.5, -85.5, 2, 1.0, 2, this.matCrate, true, 'crate');
+    this.addBox(-18, 2.5, -102.5, 2, 1.0, 2, this.matCrate, true, 'crate');
+    // 갠트리 크레인: 다리 넷(7m), 동서 보 둘, 남북 이동 보 하나, 매달린 컨테이너
+    for (const x of [-14.5, 14.5]) for (const z of [-100.5, -89.5]) this.addBox(x, 0, z, 1, 7, 1, this.matPlatform, true, 'pillar');
+    const amber = new MeshStandardMaterial({ color: 0x2a1c05, emissive: 0xffb030, emissiveIntensity: 2.0 });
+    for (const z of [-100.5, -89.5]) {
+      const beam = this.addBox(0, 7, z, 31, 0.8, 1, this.matRack);
+      for (const x of [-10, 0, 10]) {
+        const lamp = new Mesh(new BoxGeometry(1.6, 0.1, 1.04), amber);
+        lamp.position.set(x, -0.3, 0);
+        beam.add(lamp);
+      }
+    }
+    this.addBox(-4, 7, -95, 1.2, 0.8, 12, this.matRack);
+    this.addBox(-4, 4.5, -95, 6, 2.5, 2.5, this.matContainer, true, 'container');
+  }
+
   /** 임무용 확장 구역: 관문 → 화물 통로(18×40m) → 북쪽 야드(60×50m) */
   private buildNorth(): void {
     // 관문 (닫힌 상태로 시작)
@@ -195,6 +252,8 @@ export class GreyboxMap {
     this.addBox(-6.2, 0, -52, 2.5, 2.5, 6, this.matContainer, true, 'container');
     this.addBox(-3, 0, -61, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
     for (const [x, z] of [[6.5, -41], [6.5, -56], [-6.5, -44], [3, -66]] as [number, number][]) this.addBox(x, 0, z, 2, 1.0, 2, this.matCrate, true, 'crate');
+    this.addBox(-6.2, 2.5, -52.6, 2.5, 2.5, 6, this.matContainer, true, 'container');
+    this.addBox(6.5, 0, -58, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
     // 북쪽 야드
     this.addFloor(0, -95.5, 62, 52);
     this.addBox(-19.75, 0, -70.5, 21.5, 6, 1, this.matWall, true, 'wall');
@@ -213,11 +272,12 @@ export class GreyboxMap {
     this.addBox(0, 0, -103, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
     this.addBox(-10, 0, -95, 0.6, 1.1, 5, this.matCrate, true, 'barrier');
     this.addBox(10, 0, -95, 0.6, 1.1, 5, this.matCrate, true, 'barrier');
-    for (const [x, z] of [[-6, -91], [7, -99], [-13, -97], [13, -91], [0, -108], [-24, -93], [24, -97], [8, -78], [-8, -114]] as [number, number][]) {
+    for (const [x, z] of [[-6, -91], [7, -99], [-13, -97], [13, -91], [0, -108], [24, -97], [8, -78], [-8, -114]] as [number, number][]) {
       this.addBox(x, 0, z, 2, 1.0, 2, this.matCrate, true, 'crate');
     }
     this.addBox(-22, 0, -78, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
     this.addBox(22, 0, -114, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
+    this.buildYardHeights();
     this.buildBlock();
   }
 
@@ -413,6 +473,16 @@ export class GreyboxMap {
     for (const t of this.kitTags) {
       const parent = t.mesh.parent === this.blockGroup ? this.blockGroup : this.group;
       if (t.kind === 'hide') {
+        t.mesh.visible = false;
+        continue;
+      }
+      if (t.kind === 'stairs') {
+        // 일반 계단: 모듈의 원점은 위쪽 가장자리, +X가 내려가는 방향. 기준 크기 6.3(길이) x 4(높이) x 4(폭)
+        const inst = place('kit_stairs', true, parent);
+        if (!inst) continue;
+        inst.position.set(t.cx, t.y0, t.cz);
+        inst.rotation.y = t.yaw ?? 0;
+        inst.scale.set(t.sx / 6.3, t.sy / 4, t.sz / 4);
         t.mesh.visible = false;
         continue;
       }
