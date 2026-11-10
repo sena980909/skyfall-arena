@@ -238,14 +238,14 @@ if USE_DETAIL:
         # Arms are cut free from the body as well: the left arm lies across the chest and is fused to it in the generated
         # mesh, so any shared surface stretches into a sheet when the arm moves. The pauldrons (body) cover the shoulder gap.
         JOINED = {frozenset(p) for p in (('UL', 'LL'), ('UR', 'RG'))}
-        mesh_ob = BD.swap_in(mesh_ob, DETAIL, part_of=lambda b: PART.get(b, 'BODY'), joined=JOINED)
+        mesh_ob = BD.swap_in(mesh_ob, DETAIL, part_of=lambda b: PART.get(b, 'BODY'), joined=JOINED, weld=True)
         BD.recolor_blue(mesh_ob)
     elif MODE == 'fp':
         # 팔·총만 따로 만든 상세 메시(파란색으로 생성)를 절차 팔·총에 정렬한다.
         # 상완은 버리고(화면 귀퉁이에 보인다), 왼팔(전완+손)은 총에서 잘라 따로 움직이게 한다. 오른팔은 총과 한 덩어리(gun 본)로 둔다
         FP_PART = {'upper.L': 'DROP', 'upper.R': 'DROP', 'fore.L': 'LL', 'hand.L': 'LL'}
         mesh_ob = BD.swap_in(mesh_ob, DETAIL, tex_size=2048, aux_tex_size=1024, visor_material=None, align_mode='object',
-                             part_of=lambda b: FP_PART.get(b, 'RG'), joined=set(), keep_parts={'LL', 'RG'})
+                             part_of=lambda b: FP_PART.get(b, 'RG'), joined=set(), keep_parts={'LL', 'RG'}, weld=True)
     else:
         mesh_ob = BD.swap_in(mesh_ob, DETAIL)
     L.PARTS.clear()
@@ -467,7 +467,7 @@ def reload_gun(c):
     if MODE == 'fp':
         # 1인칭: 총구를 왼쪽 위로 들고 윗면을 오른쪽으로 굴려 왼쪽 면과 탄창 구멍이 카메라를 향하게 한다
         # (총을 화면 가운데까지 올리면 시야를 너무 가려서 오른쪽 아래에 둔 채 기울인다)
-        return (Matrix.Translation(GUN_POS + Vector((-0.05, 0.05, 0.075)) * c) @ Matrix.Rotation(0.22 * c, 4, 'Z')
+        return (Matrix.Translation(GUN_POS + Vector((-0.075, 0.05, 0.125)) * c) @ Matrix.Rotation(0.22 * c, 4, 'Z')
                 @ Matrix.Rotation(0.38 * c, 4, 'X') @ Matrix.Rotation(0.7 * c, 4, 'Y'))
     return (Matrix.Translation(GUN_POS + Vector((-0.03, -0.03, -0.03)) * c) @ Matrix.Rotation(0.18 * c, 4, 'Z')
             @ Matrix.Rotation(-0.12 * c, 4, 'X') @ Matrix.Rotation(0.5 * c, 4, 'Y'))

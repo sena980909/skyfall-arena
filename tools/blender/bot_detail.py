@@ -199,7 +199,7 @@ def _clean_parts(bm, fbone, part_of):
     print('DETAIL_CLEANED_FACES', moved)
 
 
-def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_visor', part_of=None, joined=None, keep_parts=None, aux_tex_size=None, align_mode='body'):
+def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_visor', part_of=None, joined=None, keep_parts=None, aux_tex_size=None, align_mode='body', weld=False):
     """절차 메시 proc(정점 그룹 = 본, 정점당 하나)을 상세 메시로 바꿔 돌려준다. proc는 지운다.
 
     part_of(본 이름) → 덩어리 이름, joined = 이어져 있어도 되는 덩어리 쌍의 집합을 주면,
@@ -225,6 +225,12 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
     # ---- 면마다 본 물려받기 → (필요하면) 덩어리 경계 자르기 → 정점 가중치 + 경계 섞기
     bm = bmesh.new()
     bm.from_mesh(dm)
+    if weld:
+        # glTF import duplicates vertices along UV seams, so every UV chart is its own open shell. Without welding, the
+        # part cut never finds an edge between parts and the hole filling caps every chart with one big dark n-gon.
+        n0 = len(bm.verts)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2e-5)
+        print('DETAIL_WELDED', n0, '->', len(bm.verts))
     bm.faces.ensure_lookup_table()
     fbone = {}
     for f in bm.faces:
