@@ -135,6 +135,70 @@ def _align(det, proc_pts, tree):
     return best[0]
 
 
+def _clean_parts(bm, fbone, part_of):
+    """가장 가까운 면으로 물려받은 덩어리 표시는 경계가 들쭉날쭉하고 작은 섬이 섞여 있다(자르면 조각으로 떨어져 보인다).
+    (1) 이웃 면 다수결로 경계를 다듬고 (2) 같은 덩어리의 가장 큰 섬에 비해 작은 섬은 둘러싼 덩어리에 넘긴다."""
+    def nbrs(f):
+        return [g for e in f.edges for g in e.link_faces if g is not f]
+    moved = 0
+    for _ in range(3):
+        change = {}
+        for f in bm.faces:
+            p = part_of(fbone[f])
+            by = {}
+            for g in nbrs(f):
+                by.setdefault(part_of(fbone[g]), []).append(g)
+            if not by:
+                continue
+            best = max(by, key=lambda k: len(by[k]))
+            if best != p and len(by[best]) >= 2 and len(by[best]) > len(by.get(p, [])):
+                change[f] = fbone[by[best][0]]
+        for f, b in change.items():
+            fbone[f] = b
+        moved += len(change)
+    for _ in range(3):
+        seen = set()
+        islands = []
+        for f in bm.faces:
+            if f in seen:
+                continue
+            p = part_of(fbone[f])
+            comp, stack = [], [f]
+            seen.add(f)
+            while stack:
+                x = stack.pop()
+                comp.append(x)
+                for g in nbrs(x):
+                    if g not in seen and part_of(fbone[g]) == p:
+                        seen.add(g)
+                        stack.append(g)
+            islands.append((p, comp))
+        biggest = {}
+        for p, comp in islands:
+            biggest[p] = max(biggest.get(p, 0), len(comp))
+        n = 0
+        for p, comp in islands:
+            if len(comp) >= max(40, 0.2 * biggest[p]):
+                continue
+            inside = set(comp)
+            by = {}
+            for x in comp:
+                for g in nbrs(x):
+                    if g not in inside:
+                        by.setdefault(part_of(fbone[g]), []).append(g)
+            if not by:
+                continue
+            best = max(by, key=lambda k: len(by[k]))
+            b = fbone[by[best][0]]
+            for x in comp:
+                fbone[x] = b
+            n += len(comp)
+        moved += n
+        if not n:
+            break
+    print('DETAIL_CLEANED_FACES', moved)
+
+
 def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_visor', part_of=None, joined=None, keep_parts=None, aux_tex_size=None, align_mode='body'):
     """절차 메시 proc(정점 그룹 = 본, 정점당 하나)을 상세 메시로 바꿔 돌려준다. proc는 지운다.
 
@@ -166,7 +230,10 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
     for f in bm.faces:
         hit = tree.find_nearest(f.calc_center_median())
         fbone[f] = face_bone[hit[2]]
+    cap_idx = 2 if visor_material else 1
+    caps = 0
     if part_of is not None:
+        _clean_parts(bm, fbone, part_of)
         ok = joined or set()
         cut = []
         for e in bm.edges:
@@ -181,6 +248,19 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
             fbone = {f: b for f, b in fbone.items() if part_of(b) in keep_parts}
             bmesh.ops.delete(bm, geom=drop, context='FACES')
             print('DETAIL_DROPPED_FACES', len(drop), 'kept', len(fbone))
+        # 자른 자리를 어두운 면으로 메운다: 손이 총에서 떨어지거나 탄창이 빠졌을 때 구멍 대신 닫힌 면이 보인다
+        # 생성 메시는 겉에서 보이는 면만 있다: 팔에 가려진 가슴, 손에 가려진 총 표면은 원래 뚫려 있다.
+        # 그래서 자른 자리뿐 아니라 열린 가장자리 전부를 메운다
+        rim = [e for e in bm.edges if e.is_boundary]
+        if rim:
+            filled = bmesh.ops.holes_fill(bm, edges=rim, sides=0)['faces']
+            for f in filled:
+                f.material_index = cap_idx
+                src = next((g for e in f.edges for g in e.link_faces if g in fbone), None)
+                fbone[f] = fbone[src] if src is not None else next(iter(fbone.values()))
+            caps = len(filled)
+            bm.faces.ensure_lookup_table()
+        print('DETAIL_CAP_FACES', caps, 'rim edges', len(rim))
     bm.verts.ensure_lookup_table()
     w = []
     for v in bm.verts:
@@ -238,6 +318,17 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
                 p.material_index = vi
                 n += 1
         print('DETAIL_VISOR_FACES', n)
+
+    if caps:
+        cap = bpy.data.materials.new('detail_cap')
+        cap.use_nodes = True
+        bsdf = next(n for n in cap.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+        bsdf.inputs['Base Color'].default_value = (0.018, 0.02, 0.028, 1.0)
+        bsdf.inputs['Roughness'].default_value = 0.75
+        cap.use_backface_culling = False
+        while len(dm.materials) < cap_idx:
+            dm.materials.append(base)
+        dm.materials.append(cap)
 
     # ---- 텍스처 줄이기 (웹 전송용)
     for img in bpy.data.images:

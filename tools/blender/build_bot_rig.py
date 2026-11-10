@@ -29,8 +29,8 @@ FPS = 30
 # 'fpref' = 1인칭용 팔·총만 정면·좌·후·우 직교 렌더(상세 디자인 이미지의 자세 기준), 'fp' = 그 상세 메시를 1인칭 모델로 내보내기
 MODE = next((m for m in ('player', 'fpref', 'fp') if m in argv), 'bot')
 ARMS_ONLY = MODE in ('fpref', 'fp')
-OUT_NAME = 'player_rig' if MODE == 'player' else 'bot_rig'
-PFX = 'player' if MODE == 'player' else 'bot'
+OUT_NAME = {'player': 'player_rig', 'fp': 'fp_detail'}.get(MODE, 'bot_rig')
+PFX = {'player': 'player', 'fp': 'fp'}.get(MODE, 'bot')
 
 # ---------------------------------------------------------------- 치수
 HIP_X, HIP_Z = 0.105, 0.92
@@ -141,6 +141,9 @@ def arm_group(b):
     if MODE == 'bot':
         return 'armsgun'
     part, sfx = b.split('.')
+    # 1인칭: 오른팔은 총과 한 덩어리로 움직인다. 전완이 총 뒷부분과 붙어 있어 따로 움직이면 총 뒤쪽 면이 팔꿈치에 남는다
+    if MODE == 'fp' and sfx == 'R' and part != 'upper':
+        return 'gun'
     return f"{part if part in ('upper', 'fore') else 'hand'}.{sfx}"
 
 
@@ -202,14 +205,20 @@ if MODE == 'fpref':
         bpy.ops.render.render(write_still=True)
         print('RENDERED', sc.render.filepath)
     sys.exit(0)
-REST['hips'] = HIPS_PIVOT
-REST['torso'] = TORSO_PIVOT
-REST['head'] = NECK
-REST['armsgun'] = ARMS_PIVOT
-REST['muzzle'] = D_GUN @ R.MUZZLE
-PARENT = {'torso': 'hips', 'head': 'torso', 'armsgun': 'torso', 'muzzle': 'armsgun'}
+if ARMS_ONLY:
+    # 1인칭: 몸 본 없이 armsgun(고정) 아래에 팔·총·탄창만 둔다
+    REST['armsgun'] = ARMS_PIVOT
+    REST['muzzle'] = D_GUN @ R.MUZZLE
+    PARENT = {'muzzle': 'armsgun'}
+else:
+    REST['hips'] = HIPS_PIVOT
+    REST['torso'] = TORSO_PIVOT
+    REST['head'] = NECK
+    REST['armsgun'] = ARMS_PIVOT
+    REST['muzzle'] = D_GUN @ R.MUZZLE
+    PARENT = {'torso': 'hips', 'head': 'torso', 'armsgun': 'torso', 'muzzle': 'armsgun'}
 EXTRA = []  # 주인공 전용 본(armsgun의 자식): 보행 클립에서는 armsgun에 붙어 다니고 재장전 클립만 따로 움직인다
-if MODE == 'player':
+if MODE in ('player', 'fp'):
     REST['gun'] = D_GUN @ Vector((0, 0, 0))
     REST['mag'] = D_GUN @ R.MAG_CENTER
     for b in ARM_PARTS:
@@ -232,34 +241,19 @@ if USE_DETAIL:
         mesh_ob = BD.swap_in(mesh_ob, DETAIL, part_of=lambda b: PART.get(b, 'BODY'), joined=JOINED)
         BD.recolor_blue(mesh_ob)
     elif MODE == 'fp':
-        # 팔·총만 따로 만든 상세 메시(파란색으로 생성)를 절차 팔·총에 정렬한다. 본은 쓰지 않는다(한 덩어리)
-        # Drop the upper arms: with the gun raised to aim height the shoulder ends poke into the screen corners.
-        # The cut sits at the elbows, which stay below the view.
+        # 팔·총만 따로 만든 상세 메시(파란색으로 생성)를 절차 팔·총에 정렬한다.
+        # 상완은 버리고(화면 귀퉁이에 보인다), 왼팔(전완+손)은 총에서 잘라 따로 움직이게 한다. 오른팔은 총과 한 덩어리(gun 본)로 둔다
+        FP_PART = {'upper.L': 'DROP', 'upper.R': 'DROP', 'fore.L': 'LL', 'hand.L': 'LL'}
         mesh_ob = BD.swap_in(mesh_ob, DETAIL, tex_size=2048, aux_tex_size=1024, visor_material=None, align_mode='object',
-                             part_of=lambda b: 'DROP' if b in ('upper.L', 'upper.R') else 'KEEP', joined=set(), keep_parts={'KEEP'})
-        mesh_ob.vertex_groups.clear()
-        mesh_ob.data.transform(Matrix.Translation(-EYE))
-        mesh_ob.name = 'FPDetail'
-        mz = bpy.data.objects.new('muzzle', None)
-        bpy.context.scene.collection.objects.link(mz)
-        mz.location = (D_GUN @ R.MUZZLE) - EYE
-        fp_out = os.path.join(PROJECT, 'public', 'assets', 'models', 'fp_detail.glb')
-        fp_want = dict(filepath=fp_out, export_format='GLB', use_selection=False, export_yup=True, export_apply=False, export_animations=False,
-                       export_materials='EXPORT', export_cameras=False, export_lights=False, export_extras=False,
-                       export_image_format='JPEG', export_image_quality=88, export_jpeg_quality=88)
-        fp_props = set(bpy.ops.export_scene.gltf.get_rna_type().properties.keys())
-        bpy.ops.export_scene.gltf(**{k: v for k, v in fp_want.items() if k in fp_props})
-        print('EXPORTED', fp_out, os.path.getsize(fp_out))
-        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(PROJECT, 'assets_src', 'fp_detail.blend'))
-        print('BUILD_DONE')
-        sys.exit(0)
+                             part_of=lambda b: FP_PART.get(b, 'RG'), joined=set(), keep_parts={'LL', 'RG'})
     else:
         mesh_ob = BD.swap_in(mesh_ob, DETAIL)
     L.PARTS.clear()
     L.PARTS.append(mesh_ob)
-if MODE == 'player':
+if MODE in ('player', 'fp'):
     # 재장전 때 빠졌다 들어가는 탄창 소품. 평소에는 총의 탄창 안에 숨어 있다(상세 메시의 탄창은 총과 한 덩어리라 따로 못 뺀다)
-    prop = L.box('mag_prop', D_GUN @ R.MAG_CENTER, (0.034, 0.10, 0.10), L.material('player_mag', (0.03, 0.035, 0.045), rough=0.5, metal=0.5), 'mag', bevel=0.006)
+    L.box('mag_prop', D_GUN @ R.MAG_CENTER, (0.034, 0.10, 0.10), L.material('player_mag', (0.03, 0.035, 0.045), rough=0.5, metal=0.5), 'mag', bevel=0.006)
+    L.box('mag_prop_glow', D_GUN @ (R.MAG_CENTER + Vector((0, 0, -0.01))), (0.036, 0.07, 0.012), L.material('player_mag_glow', (0.05, 0.3, 0.4), rough=0.3, emit=(0.2, 0.85, 1.0), emit_strength=2.0), 'mag', bevel=0.002)
     mesh_ob = L.join_parts('BotMesh')
 print('TRIS', sum(len(p.vertices) - 2 for p in mesh_ob.data.polygons), 'VERTS', len(mesh_ob.data.vertices), 'MATS', len(mesh_ob.data.materials))
 
@@ -281,8 +275,9 @@ bpy.ops.object.mode_set(mode='OBJECT')
 mesh_ob.parent = arm
 mesh_ob.modifiers.new('Armature', 'ARMATURE').object = arm
 REST_M = {b.name: b.matrix_local.copy() for b in arm_data.bones}
-ORDER = (['hips', 'torso', 'head', 'armsgun'] + [b for b in EXTRA if b != 'mag'] + ['muzzle'] + [b for b in EXTRA if b == 'mag']
-         + [f'{n}.{s}' for s in 'LR' for n in ('thigh', 'shin', 'foot')])
+ORDER = ((['armsgun'] if ARMS_ONLY else ['hips', 'torso', 'head', 'armsgun'])
+         + [b for b in EXTRA if b != 'mag'] + ['muzzle'] + [b for b in EXTRA if b == 'mag']
+         + ([] if ARMS_ONLY else [f'{n}.{s}' for s in 'LR' for n in ('thigh', 'shin', 'foot')]))
 for pb in arm.pose.bones:
     pb.rotation_mode = 'QUATERNION'
 LAST_Q = {}
@@ -416,6 +411,8 @@ def solve_leg(sfx, sx, Hj, target, pitch, X):
 
 
 def pose(clip, t):
+    if ARMS_ONLY:
+        return {n: Matrix.Identity(4) for n in ORDER}
     X = {}
     if clip == 'idle':
         br = math.sin(t / 3.0 * math.tau)
@@ -467,6 +464,11 @@ AWAY_L = A.hand_frame(POUCH + Vector((0.0, 0.03, 0.04)), (0.15, 0.25, -0.95), (-
 
 def reload_gun(c):
     """기울임 c(0..1)일 때의 총 행렬. 3인칭에서는 총을 가슴 앞에 둔 채 살짝 숙이고 옆으로 눕힌다(1인칭처럼 들어 올리면 얼굴을 가린다)."""
+    if MODE == 'fp':
+        # 1인칭: 총구를 왼쪽 위로 들고 윗면을 오른쪽으로 굴려 왼쪽 면과 탄창 구멍이 카메라를 향하게 한다
+        # (총을 화면 가운데까지 올리면 시야를 너무 가려서 오른쪽 아래에 둔 채 기울인다)
+        return (Matrix.Translation(GUN_POS + Vector((-0.05, 0.05, 0.075)) * c) @ Matrix.Rotation(0.22 * c, 4, 'Z')
+                @ Matrix.Rotation(0.38 * c, 4, 'X') @ Matrix.Rotation(0.7 * c, 4, 'Y'))
     return (Matrix.Translation(GUN_POS + Vector((-0.03, -0.03, -0.03)) * c) @ Matrix.Rotation(0.18 * c, 4, 'Z')
             @ Matrix.Rotation(-0.12 * c, 4, 'X') @ Matrix.Rotation(0.5 * c, 4, 'Y'))
 
@@ -480,6 +482,9 @@ def pose_reload(t):
     # 빈 탄창은 아래로 떨어지고, 새 탄창은 주머니에서 출발한다 (총 로컬 좌표로 환산)
     out_end = tuple(D1.to_3x3().inverted() @ Vector((0.0, 0.0, -1.05)))
     in_start = tuple((D1.inverted() @ POUCH) - R.MAG_CENTER)
+    if MODE == 'fp':
+        # 1인칭: 빈 탄창은 화면 아래로 빠지고 새 탄창은 화면 아래에서 올라온다(총 로컬)
+        out_end, in_start = (0.0, -0.02, -0.42), (0.0, -0.08, -0.40)
     Dm = D @ Matrix.Translation(TL.mag_offset(t, out_end, in_start))
     wA, wM, wAway = TL.hand_weights(t)
     frL, curlL0, thumbL0 = GRIP['L']
@@ -502,7 +507,7 @@ def pose_any(clip, t):
 
 
 # ---------------------------------------------------------------- 미리보기
-cam = L.setup_preview(res=(900, 900), fov_deg=32)
+cam = L.setup_preview(res=(1280, 720) if ARMS_ONLY else (900, 900), fov_deg=32)
 
 
 def shot(name, clip, t, loc, look=(0, 0, 0.95)):
@@ -512,22 +517,31 @@ def shot(name, clip, t, loc, look=(0, 0, 0.95)):
     L.render(os.path.join(PREVIEW, name + '.png'), loc=loc, look_at=look, fov_deg=32)
 
 
-shot(f'{PFX}_idle_front', 'idle', 0.0, (1.6, 3.2, 1.5))
-shot(f'{PFX}_idle_side', 'idle', 0.0, (3.8, 0.2, 1.1))
-shot(f'{PFX}_idle_back', 'idle', 0.0, (-1.8, -3.0, 1.6))
-if MODE == 'player':
-    for tt in (0.25, 0.42, 0.62, 0.9, 1.15):
-        shot(f'player_reload_{int(tt * 100):03d}', 'reload', tt, (-1.5, 2.6, 1.55), look=(0, 0.1, 1.25))
-        shot(f'player_reload_back_{int(tt * 100):03d}', 'reload', tt, (0.7, -2.2, 1.9), look=(0, 0.3, 1.3))
-for clip in ('walk', 'run', 'back'):
-    T = GAITS[clip]['T']
-    for q in (0, 1):
-        shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (3.8, 0.2, 1.0))
-shot(f'{PFX}_run_front', 'run', GAITS['run']['T'] * 0.1, (1.6, 3.2, 1.3))
-for clip in ('strafeR', 'strafeFastR', 'strafeL'):
-    T = GAITS[clip]['T']
-    for q in range(4):
-        shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (0.4, 4.0, 1.0))
+if ARMS_ONLY:
+    # 게임에서는 리그를 앞으로 0.19m·위로 0.125m 옮겨 붙인다(Player.FP_DETAIL_BASE) → 카메라를 그만큼 뒤·아래에 둔 것과 같다
+    FP_CAM = (EYE.x, EYE.y - 0.19, EYE.z - 0.125)
+    for tt in (0.0, 0.2, 0.35, 0.5, 0.7, 0.9, 1.05, 1.2):
+        LAST_Q.clear()
+        apply_pose(pose_any('reload', tt))
+        bpy.context.view_layer.update()
+        L.render(os.path.join(PREVIEW, f'fpd_reload_{int(tt * 100):03d}.png'), loc=FP_CAM, look_at=(FP_CAM[0], FP_CAM[1] + 5, FP_CAM[2]), fov_deg=56)
+else:
+    shot(f'{PFX}_idle_front', 'idle', 0.0, (1.6, 3.2, 1.5))
+    shot(f'{PFX}_idle_side', 'idle', 0.0, (3.8, 0.2, 1.1))
+    shot(f'{PFX}_idle_back', 'idle', 0.0, (-1.8, -3.0, 1.6))
+    if MODE == 'player':
+        for tt in (0.25, 0.42, 0.62, 0.9, 1.15):
+            shot(f'player_reload_{int(tt * 100):03d}', 'reload', tt, (-1.5, 2.6, 1.55), look=(0, 0.1, 1.25))
+            shot(f'player_reload_back_{int(tt * 100):03d}', 'reload', tt, (0.7, -2.2, 1.9), look=(0, 0.3, 1.3))
+    for clip in ('walk', 'run', 'back'):
+        T = GAITS[clip]['T']
+        for q in (0, 1):
+            shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (3.8, 0.2, 1.0))
+    shot(f'{PFX}_run_front', 'run', GAITS['run']['T'] * 0.1, (1.6, 3.2, 1.3))
+    for clip in ('strafeR', 'strafeFastR', 'strafeL'):
+        T = GAITS[clip]['T']
+        for q in range(4):
+            shot(f'{PFX}_{clip}_{q}', clip, T * q / 4, (0.4, 4.0, 1.0))
 if 'preview_only' in argv:
     print('PREVIEW_ONLY_DONE')
     sys.exit(0)
@@ -547,9 +561,12 @@ def bake(clip, n, only=None):
 
 # 주인공: 보행 클립은 몸 본만, 재장전 클립은 팔·총·탄창 본만 키를 찍는다 → 게임에서 보행 위에 재장전을 겹쳐 재생할 수 있다
 BODY = None if MODE != 'player' else set(ORDER) - set(EXTRA)
-acts = [bake('idle', 90, BODY)] + [bake(name, cfg['n'], BODY) for name, cfg in GAITS.items()]
-if MODE == 'player':
-    acts.append(bake('reload', round(TL.RELOAD_LEN * FPS), set(EXTRA)))
+if ARMS_ONLY:
+    acts = [bake('idle', 2)]
+else:
+    acts = [bake('idle', 90, BODY)] + [bake(name, cfg['n'], BODY) for name, cfg in GAITS.items()]
+if MODE in ('player', 'fp'):
+    acts.append(bake('reload', round(TL.RELOAD_LEN * FPS), None if ARMS_ONLY else set(EXTRA)))
 slot_of = {a.name: (a.slots[0] if getattr(a, 'slots', None) else None) for a in acts}
 arm.animation_data.action = None
 for act in acts:
@@ -564,6 +581,10 @@ for act in acts:
 LAST_Q.clear()
 apply_pose(pose('idle', 0.0))
 
+if ARMS_ONLY:
+    # 1인칭 모델의 원점은 눈: 게임이 뷰모델(카메라 자식)에 그대로 붙인다
+    arm.location = -EYE
+    bpy.context.view_layer.update()
 out = os.path.join(PROJECT, 'public', 'assets', 'models', OUT_NAME + '.glb')
 want = dict(filepath=out, export_format='GLB', use_selection=False, export_yup=True, export_apply=False,
             export_skins=True, export_animations=True, export_animation_mode='NLA_TRACKS', export_force_sampling=True,

@@ -297,7 +297,7 @@ export class Player implements Hittable, Healable {
    * 몸은 총을 가슴 높이로 들고 있으므로 조준 높이까지 들어 올려 화면에 놓는다. 팔·총이 한 덩어리라 본 애니메이션은 없고,
    * 재장전은 뷰모델을 기울여 화면 아래로 내렸다 올리는 것으로 표현한다(animateViewmodel).
    */
-  applyFpDetail(model: Group): void {
+  applyFpDetail(model: Group, clips: AnimationClip[] = []): void {
     if (this.rifleHolder) this.rifleHolder.visible = false;
     for (const c of [...this.viewmodel.children]) if (c !== this.muzzle) c.visible = false;
     this.vmBase.copy(FP_DETAIL_BASE);
@@ -315,6 +315,16 @@ export class Player implements Hittable, Healable {
     }
     this.fpDetailActive = true;
     this.fpRigActive = false;
+    // 재장전 클립이 있으면(왼팔·탄창이 따로 움직이는 리그) 무기의 재장전 진행도에 맞춰 재생한다. 없으면 뷰모델을 기울이는 연출로 대신한다
+    const reload = clips.find((c) => c.name === 'reload');
+    if (reload) {
+      this.fpMixer = new AnimationMixer(model);
+      this.fpReload = this.fpMixer.clipAction(reload);
+      this.fpReload.setLoop(LoopOnce, 1);
+      this.fpReload.clampWhenFinished = true;
+      this.fpReload.play();
+      this.fpReload.setEffectiveWeight(0);
+    }
     this.viewmodel.traverse((o) => {
       o.layers.set(Player.VIEWMODEL_LAYER);
       o.frustumCulled = false;
@@ -324,6 +334,8 @@ export class Player implements Hittable, Healable {
         m.receiveShadow = false;
         for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
           const sm = mat as MeshStandardMaterial;
+          sm.envMapIntensity = 0.3;
+          if (sm.name !== 'bot_detail') continue; // cap faces and the magazine prop keep their own plain materials
           // The generated roughness/metal maps are near-mirror (roughness ~0.17), which reads as wet chrome up close.
           // Use a painted hard-surface look instead and keep only the normal map.
           sm.metalnessMap = null;
@@ -679,7 +691,7 @@ export class Player implements Hittable, Healable {
     let tCant = 0;
     let tDown = 0;
     let tSeat = 0;
-    if (this.fpDetailActive && this.weapon.reloading) {
+    if (this.fpDetailActive && !this.fpReload && this.weapon.reloading) {
       const rt = this.weapon.reloadProgress(now) * this.weapon.def.reloadTime;
       const sm = (a0: number, a1: number): number => {
         const k = clamp((rt - a0) / (a1 - a0), 0, 1);

@@ -31,7 +31,7 @@ export interface LoadedAssets {
   /** Blender로 직접 만든 1인칭 팔+라이플 리그(스킨 메시 + idle/reload 클립). 있으면 fpArms 대신 쓴다 */
   fpRig: { scene: Group; clips: AnimationClip[] } | null;
   /** 힉스필드 상세 모델(파란색)의 팔·총만 잘라낸 1인칭 모델. 눈이 원점. 있으면 fpRig 대신 쓴다 */
-  fpDetail: Group | null;
+  fpDetail: { scene: Group; clips: AnimationClip[] } | null;
   /** 주인공 3인칭 몸: 적 봇과 같은 리그에 팔 관절·재장전 클립이 더해진 파란색 상세 모델 */
   playerRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 직접 만든 적 봇 리그(이동 클립 포함). 있으면 raven·pulse_rifle 대신 쓴다 */
@@ -97,7 +97,7 @@ const DARK_GAIN = 3.8;
  */
 export function applyDetailTextures(root: Object3D, d: DetailTextures): void {
   const pick = (name: string): [Texture | null, number] => {
-    if (/glow|visor/.test(name)) return [null, 0];
+    if (/glow|visor|cap|mag/.test(name)) return [null, 0];
     if (name === 'kit_paint') return [d.worn, 0.8];
     if (/suit|glove/.test(name)) return [d.suit, 0.4];
     if (DARK_MATERIAL.test(name) && d.panelDark) return [d.panelDark, -0.9]; // 뒤집힌 텍스처라 범프 방향도 뒤집어 선이 홈으로 보이게
@@ -233,7 +233,7 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
 
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
-  const fpDetail = fpDetailGltf ? fpDetailGltf.scene : null;
+  const fpDetail = fpDetailGltf ? { scene: fpDetailGltf.scene, clips: fpDetailGltf.animations } : null;
   const playerRig = playerRigGltf ? { scene: playerRigGltf.scene, clips: playerRigGltf.animations } : null;
   const mapKit = mapKitGltf ? mapKitGltf.scene : null;
   const [dPanel, dPanelDark, dSuit, dWorn] = await Promise.all([

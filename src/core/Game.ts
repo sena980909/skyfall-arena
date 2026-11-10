@@ -213,7 +213,7 @@ export class Game {
       this.map.applyTextures(a.floor, a.container);
       if (a.mapKit) this.map.applyKit(a.mapKit);
       if (a.rifle) this.player.applyRifleModel(a.rifle);
-      if (a.fpDetail) this.player.applyFpDetail(a.fpDetail);
+      if (a.fpDetail) this.player.applyFpDetail(a.fpDetail.scene, a.fpDetail.clips);
       else if (a.fpRig) this.player.applyFpRig(a.fpRig.scene, a.fpRig.clips);
       else if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
       if (a.playerRig) this.scene.add(this.player.applyBody(a.playerRig.scene, a.playerRig.clips));
