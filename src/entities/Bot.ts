@@ -42,7 +42,9 @@ const ENGAGE_MIN = 10;
 const RETREAT_COOLDOWN = 15;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
-import { GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, legsYawFor, pickGaitDir, type GaitDir } from './GaitDir';
+import {
+  GAIT_ALL, GAIT_FWD, GAIT_FWD_BACK, gaitResidual, legsYawFor, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir,
+} from './GaitDir';
 
 /** Locomotion clips that share the same stride phase layout (left foot plants at phase 0). */
 const GAIT_CLIPS = new Set(['walk', 'jog', 'run', 'back', 'strafeL', 'strafeR', 'strafeFastL', 'strafeFastR']);
@@ -122,6 +124,11 @@ export class Bot implements Hittable, Healable {
   private gaitDir: GaitDir = 'fwd';
   private gaitDirHoldUntil = 0;
   private gaitDirChanged = false;
+  /** 대각선 이동용 두 번째 클립과 그 가중치(주 클립은 currentAnim) */
+  private blendAnim: string | null = null;
+  private blendW = 0;
+  /** 걸음 섞기를 쓰는 중인가(교전 중 + 옆걸음 클립 있음) */
+  private gaitBlend = false;
   /** 상체 비틀림(rad): 다리는 이동 방향, 상체는 조준 방향 */
   private torsoTwist = 0;
   /** 상체가 바라보는 월드 요(rad). 다리 회전과 독립적으로 조준 방향을 각속도 제한으로 따라간다 */
@@ -512,6 +519,10 @@ export class Bot implements Hittable, Healable {
     const bones = this.ensurePoseBones();
     for (let i = 0; i < bones.length; i++) bones[i].quaternion.copy(this.poseClean[i]);
     this.updateAnimWeights(dt);
+    // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다(재생 배율도 같은 주기가 되게 정해져 있다)
+    const pa = this.actions[this.currentAnim];
+    const sa = this.blendAnim ? this.actions[this.blendAnim] : undefined;
+    if (pa && sa && sa !== pa) sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
     this.mixer.update(dt);
     for (let i = 0; i < bones.length; i++) this.poseClean[i].copy(bones[i].quaternion);
   }
@@ -665,7 +676,8 @@ export class Bot implements Hittable, Healable {
     const step = dt / this.animFade;
     let sum = 0;
     for (const n of Object.keys(this.actions)) {
-      const target = n === this.currentAnim ? 1 : 0;
+      const bw = this.blendAnim && this.blendAnim !== this.currentAnim ? this.blendW : 0;
+      const target = n === this.currentAnim ? 1 - bw : n === this.blendAnim ? bw : 0;
       let w = this.animWeights[n] ?? 0;
       w = target > w ? Math.min(target, w + step) : Math.max(target, w - step);
       this.animWeights[n] = w;
@@ -736,7 +748,9 @@ export class Bot implements Hittable, Healable {
           this.gaitDirChanged = true;
         }
         this.backpedal = dir === 'back';
-        this.legsYaw = legsYawFor(moveYaw, dir);
+        // 옆걸음 클립이 있으면 다리는 조준 쪽을 보고, 대각선은 두 걸음을 섞어 맞춘다(아래 클립 선택). 없으면 다리를 이동 방향으로 돌린다
+        this.gaitBlend = engaged && allowed === GAIT_ALL;
+        this.legsYaw = this.gaitBlend ? aimYaw : legsYawFor(moveYaw, dir);
       }
     } else {
       this.legsYaw = aimYaw;
@@ -778,6 +792,8 @@ export class Bot implements Hittable, Healable {
         this.actions.shoot.timeScale = 0.12;
       } else if (this.actions.idle) this.playAnim('idle');
       this.gaitSpeed = 0;
+      this.blendAnim = null;
+      this.blendW = 0;
     } else {
       // 정지에서 출발할 때는 평활화 전 속도로 클립을 고른다(봇은 즉시 최고 속도가 되므로 걷기 클립을 거치면 발이 미끄러진다)
       const rawSp = Math.hypot(this.velocity.x, this.velocity.z);
@@ -791,34 +807,50 @@ export class Bot implements Hittable, Healable {
       // 걸음 방향이 바뀐 프레임에는 유지 시간을 무시하고 바로 클립을 바꾼다(다리는 이미 돌기 시작했다)
       const force = this.gaitDirChanged;
       this.gaitDirChanged = false;
-      const sideSfx = this.gaitDir === 'left' ? 'L' : this.gaitDir === 'right' ? 'R' : '';
-      if (sideSfx && this.actions['strafe' + sideSfx]) {
-        // 옆걸음: 느린 클립(2.8m/s)과 빠른 클립(5.5m/s) 중 속도에 가까운 것
-        const fast = 'strafeFast' + sideSfx;
-        const thr = Math.sqrt(cs.strafe * cs.strafeFast) * (this.currentAnim === fast ? 0.85 : 1.15);
-        const useFast = !!this.actions[fast] && gs > thr;
-        const nm = useFast ? fast : 'strafe' + sideSfx;
-        this.playAnim(nm, 0.15, force);
-        this.actions[nm].timeScale = ts(useFast ? cs.strafeFast : cs.strafe, 0.5, 1.6);
-      } else if (this.backpedal && this.actions.back) {
-        this.playAnim('back', 0.15, force);
-        this.actions.back.timeScale = ts(cs.back, 0.5, 2.7);
-      } else if (this.backpedal && this.actions.walk) {
-        this.playAnim('walk', 0.15);
-        this.actions.walk.timeScale = -ts(cs.walk, 0.5, 2.2);
-      } else {
-        // 전진: 속도에 가장 가까운 클립(걷기·조깅·달리기). 경계는 두 클립 속도의 기하평균, ±15% 히스테리시스
+      const on = (n: string): boolean => this.currentAnim === n || this.blendAnim === n;
+      // 방향별 클립: 옆걸음은 느린 것(2.8)·빠른 것(5.5), 전진은 걷기·조깅·달리기 중 속도에 가까운 것. 경계는 기하평균 ±15%
+      const clipFor = (dir: GaitDir): { name: string; v: number } | null => {
+        if (dir === 'left' || dir === 'right') {
+          const sfx = dir === 'left' ? 'L' : 'R';
+          if (!this.actions['strafe' + sfx]) return null;
+          const fast = 'strafeFast' + sfx;
+          const useFast = !!this.actions[fast] && gs > Math.sqrt(cs.strafe * cs.strafeFast) * (on(fast) ? 0.85 : 1.15);
+          return useFast ? { name: fast, v: cs.strafeFast } : { name: 'strafe' + sfx, v: cs.strafe };
+        }
+        if (dir === 'back') return this.actions.back ? { name: 'back', v: cs.back } : null;
         const cands = (['walk', 'jog', 'run'] as const).filter((n) => this.actions[n]);
+        if (!cands.length) return null;
         let pick = cands[0];
         for (let i = 0; i < cands.length - 1; i++) {
-          const thr = Math.sqrt(cs[cands[i]] * cs[cands[i + 1]]);
-          const hyst = this.currentAnim === cands[i + 1] ? 0.85 : this.currentAnim === cands[i] ? 1.15 : 1;
-          if (gs > thr * hyst) pick = cands[i + 1];
+          const hyst = on(cands[i + 1]) ? 0.85 : on(cands[i]) ? 1.15 : 1;
+          if (gs > Math.sqrt(cs[cands[i]] * cs[cands[i + 1]]) * hyst) pick = cands[i + 1];
         }
-        if (pick) {
-          this.playAnim(pick, 0.15, force);
-          this.actions[pick].timeScale = ts(cs[pick], 0.5, pick === 'walk' ? 2.2 : 1.5);
+        return { name: pick, v: cs[pick] };
+      };
+      const prim = clipFor(this.gaitDir);
+      this.blendAnim = null;
+      this.blendW = 0;
+      if (prim) {
+        let t1 = ts(prim.v, 0.5, 1.8);
+        if (this.gaitBlend) {
+          // 대각선: 이동 방향이 주 걸음에서 벗어난 만큼 옆 걸음을 섞는다. 다리가 아직 조준 쪽으로 도는 중이면 그 차이도 여기서 메운다
+          const res = gaitResidual(Math.atan2(this.smoothVel.x, this.smoothVel.z), this.facingYaw, this.gaitDir);
+          const sec = Math.abs(res) > 0.06 ? clipFor(neighborDir(this.gaitDir, res)) : null;
+          if (sec && sec.name !== prim.name) {
+            const b = solveGaitBlend(sp, res, prim.v, this.actions[prim.name].getClip().duration, sec.v, this.actions[sec.name].getClip().duration);
+            const k = Math.max(0.5, Math.min(1.8, b.ts1)) / (b.ts1 || 1);
+            t1 = b.ts1 * k;
+            this.blendAnim = sec.name;
+            this.blendW = b.w2;
+            this.actions[sec.name].timeScale = b.ts2 * k;
+          }
         }
+        this.playAnim(prim.name, 0.15, force);
+        this.actions[prim.name].timeScale = t1;
+      } else if (this.backpedal && this.actions.walk) {
+        // 이전 방식 모델: 뒷걸음 클립이 없으면 걷기를 거꾸로 재생
+        this.playAnim('walk', 0.15);
+        this.actions.walk.timeScale = -ts(cs.walk, 0.5, 2.2);
       }
     }
     this.updateMixer(dt);

@@ -41,3 +41,39 @@ export function pickGaitDir(moveYaw: number, aimYaw: number, current: GaitDir, a
   }
   return best;
 }
+
+/** 이 걸음으로 갈 때 이동 방향이 걸음의 진행 방향에서 벗어난 각(라디안, + = 왼쪽으로). legsYaw = 지금 다리가 실제로 향하는 방향 */
+export function gaitResidual(moveYaw: number, legsYaw: number, dir: GaitDir): number {
+  return wrap(moveYaw - legsYaw - LOCAL[dir]);
+}
+
+/** residual 쪽으로 90° 옆에 있는 걸음 (전진에서 왼쪽으로 벗어나면 왼쪽 옆걸음) */
+export function neighborDir(dir: GaitDir, residual: number): GaitDir {
+  const target = wrap(LOCAL[dir] + (residual >= 0 ? Math.PI / 2 : -Math.PI / 2));
+  let best: GaitDir = 'fwd';
+  let bd = Infinity;
+  for (const d of GAIT_ALL) {
+    const e = Math.abs(wrap(LOCAL[d] - target));
+    if (e < bd) {
+      bd = e;
+      best = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * 대각선 이동: 주 걸음(클립 속도 v1 m/s, 길이 T1 초)과 옆 걸음(v2, T2)을 섞어, 다리를 돌리지 않고도 발이 실제 이동 방향으로 디디게 한다.
+ * 두 클립을 같은 주기로 맞춰 재생하면(같은 보폭 위상) 접지한 발의 속도는 두 클립 속도의 가중합이 된다:
+ *   w1·v1·ts1 = speed·cos(r),  w2·v2·ts2 = speed·sin|r|,  ts2 = ts1·T2/T1
+ * 반환: 옆 걸음 가중치 w2, 두 클립의 재생 배율.
+ */
+export function solveGaitBlend(speed: number, residual: number, v1: number, T1: number, v2: number, T2: number): { w2: number; ts1: number; ts2: number } {
+  const r = Math.max(-1.4, Math.min(1.4, residual));
+  const c = speed * Math.cos(r);
+  const sn = speed * Math.abs(Math.sin(r));
+  const b = (v2 * T2) / T1;
+  const ts1 = c / v1 + sn / b;
+  if (ts1 < 1e-4) return { w2: 0, ts1: 0, ts2: 0 };
+  return { w2: sn / b / ts1, ts1, ts2: (ts1 * T2) / T1 };
+}

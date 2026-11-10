@@ -2,7 +2,7 @@ import {
   AnimationAction, AnimationClip, AnimationMixer, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { GAIT_ALL, GAIT_FWD_BACK, legsYawFor, pickGaitDir, type GaitDir } from './GaitDir';
+import { GAIT_ALL, GAIT_FWD_BACK, gaitResidual, legsYawFor, neighborDir, pickGaitDir, solveGaitBlend, type GaitDir } from './GaitDir';
 
 /** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
 const CLIP_SPEED: Record<string, number> = {
@@ -57,7 +57,12 @@ export class PlayerBody {
   /** 걸음 방향(전진·뒷걸음·좌우 옆걸음)과 최소 유지 시간 */
   private dir: GaitDir = 'fwd';
   private dirHold = 0;
+  /** 속도가 잠깐 0을 지나도(좌우 방향 전환) 걷는 중으로 치는 시간 */
+  private stillT = 1;
+  private moveYaw = 0;
   private gait = 'idle';
+  private gait2 = '';
+  private gaitSpeed = 0;
   private readonly vel = new Vector3();
   private readonly raw = new Vector3();
   private readonly lastPos = new Vector3();
@@ -150,10 +155,16 @@ export class PlayerBody {
     this.lastPos.copy(s.pos);
     this.hasLast = true;
     const speed = Math.hypot(this.vel.x, this.vel.z);
-    const moving = speed > 0.9;
+    // 좌우로 방향을 바꾸면 속도가 0.1초쯤 0 근처를 지난다. 그동안 대기 자세로 빠졌다 돌아오지 않게 걷는 중으로 유지한다
+    if (speed > 0.9) {
+      this.stillT = 0;
+      this.moveYaw = Math.atan2(this.vel.x, this.vel.z);
+    } else this.stillT += dt;
+    const moving = this.stillT < 0.18;
+    const blend = !!(this.actions.strafeL && this.actions.strafeR);
     let target = aimYaw;
     if (moving) {
-      const moveYaw = Math.atan2(this.vel.x, this.vel.z);
+      const moveYaw = this.moveYaw;
       // 전진·뒷걸음·좌우 옆걸음 중 허리 비틀림이 가장 작은 걸음을 고른다(GaitDir.ts). 옆으로 갈 때 다리는 조준 쪽을 본 채 옆걸음한다
       const allowed = this.actions.strafeL && this.actions.strafeR ? GAIT_ALL : GAIT_FWD_BACK;
       let dir = pickGaitDir(moveYaw, aimYaw, this.dir, allowed);
@@ -163,7 +174,8 @@ export class PlayerBody {
         this.dir = dir;
         this.dirHold = 0.25;
       }
-      target = legsYawFor(moveYaw, dir);
+      // 옆걸음 클립이 있으면 다리는 조준 쪽을 보고 대각선은 두 걸음을 섞는다. 없으면 다리를 이동 방향으로 돌린다
+      target = blend ? aimYaw : legsYawFor(moveYaw, dir);
     } else this.dir = 'fwd';
     let d = wrap(target - this.legsYaw);
     // 거의 반대로 돌 때는 조준 쪽을 지나가는 방향으로 (반대로 돌면 상체가 한 바퀴 돈다)
@@ -180,16 +192,41 @@ export class PlayerBody {
     this.group.rotation.set(0, this.legsYaw, 0);
 
     // 클립 선택: 속도 구간(걷기·조깅·달리기 발 속도의 기하평균 경계)
-    let name = 'idle';
-    if (moving) {
-      if (this.dir === 'back') name = 'back';
-      else if (this.dir === 'left' || this.dir === 'right') {
-        // 느린·빠른 옆걸음 경계(3.92m/s)에 ±15% 여유: 좌우로 방향을 바꿀 때 속도가 잠깐 떨어져도 클립이 왔다 갔다 하지 않는다
-        const fast = speed > 3.92 * (this.gait.startsWith('strafeFast') ? 0.6 : 1.15);
-        name = (fast ? 'strafeFast' : 'strafe') + (this.dir === 'left' ? 'L' : 'R');
+    // 걸음 종류는 '의도한 속도'로 고른다: 올라갈 때는 즉시, 내려갈 때는 초당 6m/s씩만 따라간다.
+    // 좌우로 방향을 바꾸거나 멈출 때 속도가 잠깐 떨어져도 느린 걸음 클립을 거치지 않는다
+    this.gaitSpeed = moving ? Math.max(speed, this.gaitSpeed - dt * 6) : 0;
+    const gs = this.gaitSpeed;
+    const clipFor = (dir: GaitDir): string => {
+      if (dir === 'back') return 'back';
+      if (dir === 'left' || dir === 'right') {
+        const fast = gs > 3.92 * (this.gait.startsWith('strafeFast') || this.gait2.startsWith('strafeFast') ? 0.85 : 1.15);
+        return (fast ? 'strafeFast' : 'strafe') + (dir === 'left' ? 'L' : 'R');
       }
-      else name = speed < 2.12 ? 'walk' : speed < 3.92 ? 'jog' : speed < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
+      return gs < 2.12 ? 'walk' : gs < 3.92 ? 'jog' : gs < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
+    };
+    let name = 'idle';
+    let name2 = '';
+    let w2 = 0;
+    let ts1 = 1;
+    let ts2 = 1;
+    if (moving) {
+      name = clipFor(this.dir);
+      if (!this.actions[name]) name = 'idle';
+      else {
+        ts1 = speed / CLIP_SPEED[name];
+        // 대각선: 이동 방향이 주 걸음에서 벗어난 만큼 옆 걸음을 섞는다(GaitDir.solveGaitBlend)
+        const res = blend && speed > 0.9 ? gaitResidual(this.moveYaw, this.legsYaw, this.dir) : 0;
+        const sec = Math.abs(res) > 0.06 ? clipFor(neighborDir(this.dir, res)) : '';
+        if (sec && sec !== name && this.actions[sec]) {
+          const b = solveGaitBlend(speed, res, CLIP_SPEED[name], this.actions[name].getClip().duration, CLIP_SPEED[sec], this.actions[sec].getClip().duration);
+          name2 = sec;
+          w2 = b.w2;
+          ts1 = b.ts1;
+          ts2 = b.ts2;
+        }
+      }
     }
+    this.gait2 = name2;
     if (!this.actions[name]) name = 'idle';
     // Gait-to-gait: bring the incoming clip to the same stride phase as the outgoing one so the feet line up while blending.
     if (name !== this.gait) {
@@ -202,7 +239,7 @@ export class PlayerBody {
     }
     let sum = 0;
     for (const k of Object.keys(this.actions)) {
-      const w = this.weights[k] + ((k === name ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 10);
+      const w = this.weights[k] + ((k === name ? 1 - w2 : k === name2 ? w2 : 0) - this.weights[k]) * Math.min(1, dt * 10);
       this.weights[k] = w;
       sum += w;
     }
@@ -211,8 +248,13 @@ export class PlayerBody {
       a.setEffectiveWeight(this.weights[k] / (sum || 1));
       const cs = CLIP_SPEED[k];
       // 공중에서는 다리를 천천히 젓는다
-      a.timeScale = cs ? (s.onGround ? Math.max(0.4, speed / cs) : 0.35) : 1;
+      const t = k === name ? ts1 : k === name2 ? ts2 : speed / (cs || 1);
+      a.timeScale = cs ? (s.onGround ? Math.max(0.4, Math.min(2, t)) : 0.35) : 1;
     }
+    // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다
+    const pa = this.actions[name];
+    const sa = name2 ? this.actions[name2] : undefined;
+    if (pa && sa && name !== 'idle') sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
     this.reloadBlend += ((s.reload !== null ? 1 : 0) - this.reloadBlend) * Math.min(1, dt * 14);
     if (this.reloadAction) {
       if (s.reload !== null) this.reloadAction.time = s.reload * this.reloadAction.getClip().duration;

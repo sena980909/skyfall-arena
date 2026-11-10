@@ -114,7 +114,8 @@ export class Autopilot implements PlayerInput {
     const obj = this.objective;
     const atObj = !!obj && Math.hypot(p.position.x - obj.pos.x, p.position.z - obj.pos.z) < obj.radius * 0.6 && Math.abs(p.position.y - obj.pos.y) < 2.5;
     if (this.target && !obj?.urgent) {
-      this.combat(dt, this.target, visible.length, eye);
+      // 3인칭에서는 조준선이 카메라(오른쪽 어깨 뒤)에서 나가므로, 눈 위치가 아니라 카메라 위치에서 각도를 잡아야 조준점이 맞는다
+      this.combat(dt, this.target, visible.length, p.thirdPerson ? ctx.camera.position : eye);
     } else {
       this.roam(dt, atObj);
     }
