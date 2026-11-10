@@ -6,7 +6,7 @@ import type { AnimationAction, AnimationClip } from 'three';
 import { CharacterController } from './CharacterController';
 import { Weapon } from '@/combat/Weapon';
 import { GRAVITY, RAVEN } from '@/data/heroes';
-import { SPAWN_INVULN_SECONDS } from '@/data/waves';
+import { SPAWN_INVULN_SECONDS } from '@/data/rules';
 import { computeDamage, hitscan, losBlocked, tagHitMesh, type DamageInfo, type Hittable } from '@/combat/Hitscan';
 import { PulseRocket, type RocketHit } from '@/combat/PulseRocket';
 import { HealField } from '@/combat/HealField';

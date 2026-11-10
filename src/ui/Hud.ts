@@ -6,7 +6,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
   return el as T;
 };
 
-export type OverlayId = 'ov-menu' | 'ov-pause' | 'ov-dead' | 'ov-end';
+export type OverlayId = 'ov-menu' | 'ov-pause' | 'ov-end';
 
 /** DOM 기반 HUD/오버레이 */
 export class Hud {
@@ -15,7 +15,6 @@ export class Hud {
   private readonly bots = $('hud-bots');
   private readonly rest = $('hud-rest');
   private readonly score = $('hud-score');
-  private readonly lives = $('hud-lives');
   private readonly hpFill = $('hud-hpfill');
   private readonly hpText = $('hud-hp');
   private readonly ammo = $('hud-ammo');
@@ -98,10 +97,6 @@ export class Hud {
     });
   }
 
-  setWave(n: number, total: number): void {
-    this.wave.textContent = `WAVE ${n} / ${total}`;
-  }
-
   /** 임무 목표 표시(상단 제목·부제) */
   setObjective(title: string, detail: string): void {
     this.wave.textContent = title;
@@ -138,10 +133,6 @@ export class Hud {
     this.interactFill.style.width = `${Math.round(progress * 100)}%`;
   }
 
-  setBots(n: number): void {
-    this.bots.textContent = `남은 봇 ${n}`;
-  }
-
   setRest(text: string): void {
     this.rest.textContent = text;
   }
@@ -164,10 +155,6 @@ export class Hud {
 
   setScore(n: number): void {
     this.score.textContent = String(n);
-  }
-
-  setLives(n: number, max = 3): void {
-    this.lives.textContent = '♥'.repeat(Math.max(0, n)) + '♡'.repeat(Math.max(0, max - n));
   }
 
   /**
@@ -302,14 +289,9 @@ export class Hud {
   }
 
   showOverlay(id: OverlayId | null): void {
-    for (const o of ['ov-menu', 'ov-pause', 'ov-dead', 'ov-end'] as OverlayId[]) {
+    for (const o of ['ov-menu', 'ov-pause', 'ov-end'] as OverlayId[]) {
       $(o).classList.toggle('hidden', o !== id);
     }
-  }
-
-  setDead(by: string, count: number): void {
-    $('dead-by').textContent = `${by}에게 처치됨`;
-    $('dead-count').textContent = String(count);
   }
 
   setEnd(victory: boolean, sub: string, stats: [string, string][]): void {

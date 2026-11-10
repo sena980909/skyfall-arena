@@ -148,7 +148,6 @@
     #ov-menu.loading { background: #06080e; backdrop-filter: none; }
     #ov-menu.loading .btn.primary { opacity: .55; pointer-events: none; }
     /* 사망 오버레이는 쓰러지는 장면이 보이도록 얇게 */
-    #ov-dead { background: radial-gradient(ellipse at center, rgba(60, 0, 0, .25), rgba(40, 0, 0, .55)); backdrop-filter: none; }
     .overlay.hidden { display: none; }
     .overlay h1 { font-size: 56px; letter-spacing: 8px; margin: 0 0 6px; font-weight: 900; background: linear-gradient(90deg, #8ec5ff, #ffffff); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .overlay h2 { font-size: 36px; letter-spacing: 4px; margin: 0 0 12px; }
@@ -177,7 +176,7 @@
     <div id="objmark" class="hidden"><div class="diamond"></div><span id="objmark-text"></span></div>
     <div id="interact" class="hidden"><span id="interact-text"></span><div class="bar"><div id="interact-fill"></div></div></div>
     <div class="hud-top">
-      <div class="wave" id="hud-wave">WAVE 1</div>
+      <div class="wave" id="hud-wave"></div>
       <div class="bots" id="hud-bots">남은 봇 0</div>
       <div class="rest" id="hud-rest"></div>
       <div class="bossbar hidden" id="bossbar">
@@ -188,7 +187,6 @@
     <div class="hud-tl"><div class="killfeed" id="killfeed"></div></div>
     <div class="hud-tr">
       <div class="score" id="hud-score">0</div>
-      <div class="lives" id="hud-lives">♥♥♥</div>
     </div>
     <div class="hud-bl">
       <div class="portrait">R</div>
@@ -232,10 +230,6 @@
     <h1>SKYFALL ARENA</h1>
     <div class="sub">PROTOTYPE · 임무: 탈출</div>
     <div class="story">공중 화물 기지 <b>스카이독</b>. 아르고스 보안군이 화물 항로를 조작해 물자를 빼돌리고 있다.<br/>증거를 찾아 관제동에 잠입한 정찰 요원 <b>레이븐</b> — 경보가 울렸다. 기록을 들고 살아서 나가라. <b>부활은 없다.</b></div>
-    <div class="row" id="mode">
-      <button class="btn sel" data-m="mission">임무 (탈출)</button>
-      <button class="btn" data-m="arena">아레나 (웨이브)</button>
-    </div>
     <div class="row" id="difficulty">
       <button class="btn" data-d="easy">EASY</button>
       <button class="btn sel" data-d="normal">NORMAL</button>
@@ -261,12 +255,6 @@
     <h2>PAUSED</h2>
     <button class="btn primary" id="btn-resume">클릭하여 계속</button>
     <div class="keys">마우스가 잠금 해제되었습니다. 계속하려면 클릭하세요.</div>
-  </div>
-
-  <div id="ov-dead" class="overlay hidden">
-    <h2 style="color:#ff5a2f">ELIMINATED</h2>
-    <div class="sub" id="dead-by">처치됨</div>
-    <div class="countdown" id="dead-count">3</div>
   </div>
 
   <div id="ov-end" class="overlay hidden">

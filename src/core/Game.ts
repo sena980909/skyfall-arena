@@ -17,12 +17,11 @@ import { PostFx } from '@/render/PostFx';
 import { Hud } from '@/ui/Hud';
 import { Player } from '@/entities/Player';
 import type { Bot } from '@/entities/Bot';
-import { WaveManager } from '@/world/WaveManager';
 import { Mission, MISSION_START } from '@/world/Mission';
 import { HealthPack } from '@/world/HealthPack';
 import type { Projectile } from '@/combat/Projectile';
 import { DIFFICULTIES, type DifficultyId } from '@/data/difficulty';
-import { PLAYER_LIVES, RESPAWN_SECONDS, SCORE } from '@/data/waves';
+import { DEATH_CAM_SECONDS, SCORE } from '@/data/rules';
 import type { Hittable } from '@/combat/Hitscan';
 
 type GameState = 'menu' | 'playing' | 'paused' | 'dead' | 'ended';
@@ -51,26 +50,21 @@ export class Game {
   private readonly bots: Bot[] = [];
   private readonly packs: HealthPack[] = [];
   private projectiles: Projectile[] = [];
-  private readonly waves: WaveManager;
   private readonly ctx: GameContext;
 
   private state: GameState = 'menu';
   /** 시작 화면에서 전체 화면을 골랐는가(Esc로 풀려도 재개할 때 다시 들어간다) */
   private wantFullscreen = false;
   private difficultyId: DifficultyId = 'normal';
-  /** 게임 모드: 임무(목표 수행 후 탈출) 또는 아레나(웨이브 섬멸) */
-  mode: 'mission' | 'arena' = 'mission';
   /** 터치 조작(모바일). 터치 기기가 아니면 null */
   private touch: TouchControls | null = null;
   readonly mission: Mission;
   private simTime = 0;
   private accumulator = 0;
   private lastFrame = 0;
-  private lives = PLAYER_LIVES;
   private score = 0;
-  private respawnAt = 0;
-  /** 사망 오버레이는 쓰러지는 연출이 보이도록 잠시 뒤에 띄운다 */
-  private deadOverlayAt = 0;
+  /** 쓰러진 뒤 결과 화면을 띄울 시각(부활은 없다) */
+  private endAt = 0;
   /** 후처리(블룸·화면 보정). 만들지 못하는 환경이면 null → 기존처럼 화면에 바로 그린다. F7로 켜고 끈다 */
   private post: PostFx | null = null;
   /** 피격 화면 충격 계산용: 직전 프레임의 체력 */
@@ -84,8 +78,6 @@ export class Game {
   assets: LoadedAssets | null = null;
   /** F8 오토파일럿 (플레이테스트/데모) */
   autopilot: Autopilot | null = null;
-  /** 웨이브 클리어 스냅샷 (플레이테스트 로그) */
-  readonly waveLog: { wave: number; time: number; deaths: number; kills: number; shots: number; hits: number; damageTaken: number; hp: number }[] = [];
 
   constructor(container: HTMLElement) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -138,7 +130,7 @@ export class Game {
         this.scene.add(l);
       }
     }
-    this.nav = new NavGrid(this.map);
+    this.nav = new NavGrid(this.map, MISSION_START);
     this.fx = new Fx(this.scene);
     this.fx.enableViewmodelLayer();
     this.input = new Input(this.renderer.domElement);
@@ -174,7 +166,6 @@ export class Game {
       spawnProjectile: (p) => this.projectiles.push(p),
     };
     this.player.ctx = this.ctx;
-    this.waves = new WaveManager(this.ctx, (n, noDeath) => this.onWaveClear(n, noDeath), () => this.endGame(true));
 
     this.mission = new Mission(this.ctx, {
       onScore: (points, text) => {
@@ -202,18 +193,10 @@ export class Game {
     }
 
     this.bindUi();
-    const modeBtns = document.querySelectorAll<HTMLButtonElement>('#mode .btn');
-    modeBtns.forEach((b) =>
-      b.addEventListener('click', () => {
-        modeBtns.forEach((x) => x.classList.remove('sel'));
-        b.classList.add('sel');
-        this.mode = b.dataset.m === 'arena' ? 'arena' : 'mission';
-      }),
-    );
     window.addEventListener('resize', () => this.onResize());
     this.input.onLockChange = (locked) => this.onLockChange(locked);
     this.input.onLockFailed = () => this.hud.killFeed('이 브라우저는 Pointer Lock을 지원하지 않아 마우스 시점이 동작하지 않습니다', 'death');
-    this.player.spawn(this.map.playerSpawn, 0);
+    this.player.spawn(MISSION_START, 0);
     this.hud.showOverlay('ov-menu');
     requestAnimationFrame((t) => this.frame(t));
     void this.loadAssets();
@@ -334,23 +317,17 @@ export class Game {
 
   // ---------- 흐름 ----------
 
-  /** 이번 판의 시작 자리: 임무는 관제동 안, 아레나는 남쪽 착륙장 */
-  private get startPoint(): Vector3 {
-    return this.mode === 'mission' ? MISSION_START : this.map.playerSpawn;
-  }
-
-  /** 관문을 여닫고 길찾기 격자를 다시 만든다. 닫혀 있으면 시작 자리가 있는 쪽만 도달 가능 영역이 된다 */
-  private setGate(open: boolean, force = false): void {
-    if (this.map.gateOpen === open && !force) return;
+  /** 관문을 여닫고 길찾기 격자를 다시 만든다. 닫혀 있으면 시작 자리(관제동)가 있는 북쪽만 도달 가능 영역이 된다 */
+  private setGate(open: boolean): void {
+    if (this.map.gateOpen === open) return;
     this.map.setGate(open);
-    this.nav = new NavGrid(this.map, this.startPoint);
+    this.nav = new NavGrid(this.map, MISSION_START);
     this.ctx.nav = this.nav;
   }
 
   private startGame(): void {
     this.sfx.init();
-    // 모드가 바뀌면 시작 자리(길찾기 영역의 기준)가 달라지므로 관문 상태가 같아도 격자를 다시 만든다
-    this.setGate(false, true);
+    this.setGate(false);
     for (const b of this.bots) {
       this.scene.remove(b.group, b.debugLine);
     }
@@ -360,38 +337,18 @@ export class Game {
     for (const pr of this.projectiles) pr.dispose();
     this.projectiles = [];
     this.hud.resetFeeds();
-    // 임무에는 부활이 없다(쓰러지면 실패). 아레나는 목숨 셋
-    this.lives = this.mode === 'mission' ? 1 : PLAYER_LIVES;
     this.score = 0;
     this.simTime = 0;
     this.ctx.now = 0;
     this.startedAt = 0;
     this.player.resetStats();
-    this.waveLog.length = 0;
-    this.player.spawn(this.startPoint, 0);
-    this.hud.setLives(this.lives, this.lives);
+    this.player.spawn(MISSION_START, 0);
     this.hud.setScore(this.score);
     this.hud.setVisible(true);
     this.hud.showOverlay(null);
     this.state = 'playing';
-    if (this.mode === 'mission') {
-      this.waves.reset();
-      this.mission.start();
-    } else {
-      this.mission.stop();
-      this.waves.start();
-    }
+    this.mission.start();
     this.input.requestLock();
-  }
-
-  private onWaveClear(n: number, noDeath: boolean): void {
-    const st = this.player.stats;
-    this.waveLog.push({ wave: n, time: this.simTime, deaths: st.deaths, kills: st.kills, shots: st.shots, hits: st.hits, damageTaken: st.damageTaken, hp: this.player.hp });
-    if (noDeath) {
-      this.score += SCORE.waveNoDeath;
-      this.hud.killFeed(`WAVE ${n} 노데스 클리어 +${SCORE.waveNoDeath}`, 'hs');
-    } else this.hud.killFeed(`WAVE ${n} 클리어`);
-    this.hud.setScore(this.score);
   }
 
   private onBotKilled(bot: Bot, headshot: boolean): void {
@@ -404,31 +361,15 @@ export class Game {
     this.hud.killFeed(`YOU ▶ ${bot.displayName}${headshot ? ' (헤드샷)' : ''}${bot.isBoss ? ' +500' : ''}`, headshot || bot.isBoss ? 'hs' : '');
     if (bot.isBoss) this.hud.setBoss(null);
     if (headshot) this.hud.headshotBanner();
-    if (this.mode === 'arena') this.hud.setBots(this.waves.aliveBots);
     this.sfx.kill();
   }
 
   private onPlayerDied(by: string): void {
     this.lastKillerName = by;
-    this.lives--;
-    this.waves.playerDiedThisWave = true;
-    this.hud.setLives(this.lives, this.mode === 'mission' ? 1 : PLAYER_LIVES);
     this.hud.killFeed(`${by} ▶ YOU`, 'death');
-    if (this.lives <= 0) {
-      this.endGame(false, this.mode === 'mission' ? `${by}에게 쓰러졌다` : '');
-      return;
-    }
+    // 부활은 없다. 쓰러지는 모습을 잠깐 보여 준 뒤 임무 실패로 끝난다
     this.state = 'dead';
-    this.respawnAt = this.simTime + RESPAWN_SECONDS;
-    this.deadOverlayAt = this.simTime + 0.6;
-    this.hud.setDead(by, RESPAWN_SECONDS);
-  }
-
-  private respawn(): void {
-    // 임무에서는 마지막으로 달성한 목표 지점(체크포인트)에서 부활한다
-    this.player.spawn(this.mode === 'mission' ? this.mission.respawnPoint : this.map.playerSpawn, this.simTime);
-    this.state = 'playing';
-    this.hud.showOverlay(null);
+    this.endAt = this.simTime + DEATH_CAM_SECONDS;
   }
 
   private endGame(victory: boolean, reason = ''): void {
@@ -442,10 +383,9 @@ export class Game {
     const hsr = s.hits ? Math.round((s.headshots / s.hits) * 100) : 0;
     const elapsed = Math.round(this.simTime - this.startedAt);
     const label = this.ctx.difficulty.label;
-    const sub = this.mode === 'mission'
-      ? (victory ? `임무 완수 — 제비가 스카이독을 벗어났다. 항로 기록은 무사히 전달되었다 · ${label}`
-        : `임무 실패 — ${reason || '레이븐의 신호가 끊겼다'}. 항로 기록은 스카이독에 남았다 · ${label}`)
-      : (victory ? `웨이브 ${this.waves.totalWaves}개 모두 섬멸 · ${label}` : `웨이브 ${this.waves.waveNumber}에서 전멸 · ${label}`);
+    const sub = victory
+      ? `임무 완수 — 제비가 스카이독을 벗어났다. 항로 기록은 무사히 전달되었다 · ${label}`
+      : `임무 실패 — ${reason || '레이븐의 신호가 끊겼다'}. 항로 기록은 스카이독에 남았다 · ${label}`;
     this.hud.setEnd(victory, sub, [
       ['점수', String(this.score)],
       ['처치', String(s.kills)],
@@ -508,7 +448,7 @@ export class Game {
     const sz = Math.round(sp.z / 4) * 4;
     this.sun.target.position.set(sx, 0, sz);
     this.sun.position.set(sx + 42, 40, sz + 16);
-    // The control block cannot be seen from the arena (camera, not player: third person and the death cam move it)
+    // The control block cannot be seen from the landing pad (camera, not player: third person and the death cam move it)
     this.map.setBlockVisible(this.camera.position.z < -32);
     const inside = this.camera.position.z < -122.3 ? 1 : 0;
     this.indoor += (inside - this.indoor) * Math.min(1, dt * 5);
@@ -636,7 +576,7 @@ export class Game {
     this.ctx.now = this.simTime;
     if (this.state === 'playing') {
       if (this.autopilot) {
-        this.autopilot.objective = this.mode === 'mission' ? this.mission.goal() : null;
+        this.autopilot.objective = this.mission.goal();
         this.autopilot.think(dt);
         this.player.update(dt, this.autopilot);
         this.autopilot.endFrame();
@@ -645,18 +585,14 @@ export class Game {
     else {
       this.input.consumeMouse();
       this.player.updateDeathCam(dt);
-      if (this.simTime >= this.deadOverlayAt) this.hud.showOverlay('ov-dead');
-      const left = Math.max(0, this.respawnAt - this.simTime);
-      this.hud.setDead(this.lastKiller(), Math.ceil(left));
-      if (left <= 0) this.respawn();
+      if (this.state === 'dead' && this.simTime >= this.endAt) this.endGame(false, `${this.lastKillerName}에게 쓰러졌다`);
     }
     this.assignAttackTokens();
     for (const b of this.bots) b.update(dt);
     for (const pr of this.projectiles) pr.update(dt);
     if (this.projectiles.some((p) => p.done)) this.projectiles = this.projectiles.filter((p) => !p.done);
     this.updatePacks(dt);
-    if (this.mode === 'mission') this.mission.update(dt);
-    else this.waves.update();
+    this.mission.update(dt);
   }
 
   /** 공격 토큰 배분: 플레이어가 보이는 봇 중 가까운 순으로 난이도별 N명만 사격 허용 */
@@ -689,7 +625,4 @@ export class Game {
   }
 
   private lastKillerName = '???';
-  private lastKiller(): string {
-    return this.lastKillerName;
-  }
 }

@@ -30,7 +30,7 @@ interface Relay {
 interface Cell {
   /** 처음 놓인 자리 */
   spot: Vector3;
-  /** 지금 놓인 자리. 들고 있는 동안은 마지막으로 땅을 디딘 자리(죽으면 여기에 떨어진다) */
+  /** 지금 놓인 자리. 들고 있는 동안은 마지막으로 땅을 디딘 자리 */
   ground: Vector3;
   group: Group;
   where: string;
@@ -55,7 +55,6 @@ const START_GUARDS = [new Vector3(-15, 0, -147), new Vector3(17, 0, -143), new V
 /** 관문이 열릴 때 착륙장 쪽에서 통로를 겨누는 저격병 */
 const GATE_MARKSMAN = new Vector3(4, 0, -13);
 const BEACON_POS = new Vector3(0, 0, -95);
-const YARD_CHECKPOINT = new Vector3(0, 0, -89);
 const EXTRACT_POS = new Vector3(0, 0, 26);
 const INTERACT_RADIUS = 2.6;
 const RELAY_HOLD = 2.5;
@@ -74,7 +73,7 @@ const UPLOAD_SECONDS = 35;
 const UPLOAD_WAVE_EVERY = 10;
 const UPLOAD_MAX_ALIVE = 3;
 const TERMINAL_POS = new Vector3(-2.6, 0, -152.3);
-/** 전원 셀 운반: 전송이 끝나면 셀 둘(서버실, 화물 통로)을 신호기로 옮긴다. 들고 있는 동안은 달릴 수 없고, 죽으면 그 자리에 떨어진다 */
+/** 전원 셀 운반: 전송이 끝나면 셀 둘(서버실, 화물 통로)을 신호기로 옮긴다. 들고 있는 동안은 달릴 수 없다 */
 const CELL_SPOTS: { pos: Vector3; where: string }[] = [
   { pos: new Vector3(0, 0, -149.4), where: '서버실' },
   { pos: new Vector3(5.5, 0, -51.5), where: '화물 통로' },
@@ -156,18 +155,12 @@ export class Mission {
   /** 셀을 들고 관제동을 나설 때의 차단조를 이미 불렀는가 */
   private carrySprung = false;
   private botCounter = 0;
-  private readonly checkpoint = new Vector3();
   private readonly tmp = new Vector3();
 
   constructor(private readonly ctx: GameContext, private readonly hooks: MissionHooks) {}
 
   get active(): boolean {
     return this.stage !== 'idle' && this.stage !== 'done' && this.stage !== 'failed';
-  }
-
-  /** 부활 위치: 마지막으로 달성한 목표 지점 */
-  get respawnPoint(): Vector3 {
-    return this.checkpoint;
   }
 
   get aliveBots(): number {
@@ -333,16 +326,6 @@ export class Mission {
     for (const c of this.cells) c.group.visible = false;
   }
 
-  /** 임무를 끄고 표시물을 숨긴다(아레나 모드로 시작할 때) */
-  stop(): void {
-    this.stage = 'idle';
-    this.spawnQueue = [];
-    this.setHeld(null);
-    if (this.built) this.setVisible(false);
-    this.ctx.hud.setObjectiveMarker(null, this.ctx.camera);
-    this.ctx.hud.setInteract(null);
-  }
-
   start(): void {
     this.build();
     this.setVisible(true);
@@ -359,7 +342,6 @@ export class Mission {
     this.boss = null;
     this.botCounter = 0;
     this.waveCount = 0;
-    this.checkpoint.copy(MISSION_START);
     this.hooks.setGate(false);
     this.relayStep = 0;
     this.openRelays = [this.relays[2]];
@@ -587,7 +569,6 @@ export class Mission {
         if (r.progress >= 1) {
           r.done = true;
           r.light.emissive.setHex(CYAN);
-          this.checkpoint.copy(r.pos);
           const n = doneNow + 1;
           this.hooks.onScore(MISSION_SCORE.relay, lights ? `유도등 점등 ${n} / ${this.openRelays.length}` : '봉쇄 해제');
           if (lights && n < this.openRelays.length) hud.comm(SHIP, '하나 확인. 나머지 하나도 켜 줘.');
@@ -660,7 +641,6 @@ export class Mission {
           this.uplinkEdge.emissive.setHex(CYAN);
           this.uplinkEdge.emissiveIntensity = 0.5;
         }
-        this.checkpoint.copy(UPLOAD_CENTER);
         this.stage = 'carry';
         this.hooks.onScore(MISSION_SCORE.upload, '항로 기록 전송 완료');
         hud.comm(HQ, '기록 확보! 이제 널 빼낼 차례다. 그런데 야드의 신호기에 전원이 없어.');
@@ -671,11 +651,7 @@ export class Mission {
       const p = ctx.player;
       const c = this.held;
       if (c) {
-        if (!p.alive) {
-          // 죽으면 마지막으로 디딘 자리에 떨어진다
-          this.setHeld(null);
-          hud.killFeed('전원 셀을 떨어뜨렸다 — 쓰러진 자리에 남아 있다', 'death');
-        } else {
+        if (p.alive) {
           if (p.ctrl.onGround) c.ground.copy(p.position);
           if (!this.carrySprung && c === this.cells[0] && p.position.z > -120) {
             this.carrySprung = true;
@@ -687,7 +663,6 @@ export class Mission {
           if (Math.hypot(d.x, d.z) <= INTERACT_RADIUS && Math.abs(d.y) < 2.5) {
             c.delivered = true;
             this.setHeld(null);
-            this.checkpoint.copy(YARD_CHECKPOINT);
             const n = this.cellsDelivered;
             this.hooks.onScore(MISSION_SCORE.cell, `전원 셀 장착 ${n} / ${this.cells.length}`);
             ctx.sfx.waveClear();
@@ -707,8 +682,7 @@ export class Mission {
           if (Math.hypot(d.x, d.z) > CELL_PICKUP || Math.abs(d.y) >= 2.5) continue;
           this.setHeld(k);
           ctx.sfx.heal();
-          if (k.taken) hud.killFeed('전원 셀 다시 확보', 'hs');
-          else {
+          if (!k.taken) {
             k.taken = true;
             if (k === this.cells[0]) {
               CELL_GUARDS.forEach((pos, i) => {
@@ -749,7 +723,6 @@ export class Mission {
       hud.setObjective('목표: 탈출선 호출', `야드 중앙 신호기 · 남은 적 ${this.aliveBots}`);
       if (this.beaconProgress >= 1) {
         this.beaconLight?.emissive.setHex(CYAN);
-        this.checkpoint.copy(YARD_CHECKPOINT);
         this.stage = 'defend';
         this.timerEnd = now + DEFEND_SECONDS;
         this.nextWaveAt = now + 1;
@@ -793,7 +766,6 @@ export class Mission {
           this.relayStep = 1;
           this.openRelays = [this.relays[0], this.relays[1]];
           this.stage = 'relays';
-          this.checkpoint.copy(YARD_CHECKPOINT);
           this.queue(1, 1.0);
           this.queueOne(0.6, MARKSMAN, GATE_MARKSMAN);
           hud.comm(HQ, '추적자 제압. 놈의 인증키로 남쪽 관문을 열었다. 통로를 지나 착륙장으로.');

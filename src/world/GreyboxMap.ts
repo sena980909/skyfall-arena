@@ -21,7 +21,7 @@ export class GreyboxMap {
   /** Control block objects live in their own group so the whole block can be skipped while it is hidden behind the yard wall */
   private readonly blockGroup = new Group();
   private target: Group = this.group;
-  /** Dark panel in the block doorway, shown only while the block itself is hidden (the door is a 3 degree speck from the arena) */
+  /** Dark panel in the block doorway, shown only while the block itself is hidden (the door is a 3 degree speck from the landing pad) */
   private doorPlug: Mesh | null = null;
   readonly meshes: Mesh[] = [];
   readonly colliders: Box3[] = [];
@@ -29,7 +29,7 @@ export class GreyboxMap {
   private readonly kitTags: KitTag[] = [];
   /** 접지 그림자를 깔 발자국(바닥에 닿는 상자의 평면 크기). block = 관제동 안 */
   private readonly footprints: { cx: number; cz: number; sx: number; sz: number; block: boolean }[] = [];
-  /** 전체 범위: 남쪽 아레나(z -30..30) + 화물 통로(z -70..-30) + 북쪽 야드(z -121..-70) + 관제동(z -168..-122, 실내) */
+  /** 전체 범위: 남쪽 착륙장(z -30..30) + 화물 통로(z -70..-30) + 북쪽 야드(z -121..-70) + 관제동(z -168..-122, 실내) */
   readonly bounds = new Box3(new Vector3(-40, -1, -170), new Vector3(40, 10, 30));
   readonly playerSpawn = new Vector3(0, 0, 26);
   /** 힐팩 위치: [x, z, big] — GDD 6장: 대 ×2, 소 ×4 */
@@ -64,7 +64,7 @@ export class GreyboxMap {
   ];
   /** 관제동 실내 조명(그림자 없음). 장면에 넣는 것은 Game이 한다(모바일에서는 넣지 않는다) */
   readonly interiorLights: PointLight[] = [];
-  /** 아레나와 통로 사이의 관문. 닫혀 있으면 충돌·탄 판정에 들어가고, 열리면 빠진다 */
+  /** 착륙장과 통로 사이의 관문. 닫혀 있으면 충돌·탄 판정에 들어가고, 열리면 빠진다 */
   gateOpen = false;
   private gateMesh!: Mesh;
   private gateBox!: Box3;
@@ -436,7 +436,7 @@ export class GreyboxMap {
   }
 
   /**
-   * From the arena the block is hidden behind the 6 m yard wall; only its doorway shows, 90 m away through the gate.
+   * From the landing pad the block is hidden behind the 6 m yard wall; only its doorway shows, 90 m away through the gate.
    * Hiding it there saves about 160 draw calls whenever the camera faces north. A dark panel stands in for the doorway.
    */
   setBlockVisible(v: boolean): void {
