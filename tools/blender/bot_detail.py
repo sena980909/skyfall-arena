@@ -349,6 +349,64 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
     return det
 
 
+def import_prop(path, name, group, center, size, rot, uv_name=None, tex_size=512, material_name='mag_detail'):
+    """작은 소품(탄창)의 생성 메시를 불러와 본 하나에 통째로 붙인다.
+
+    rot: 불러온 메시의 축을 리그 축(+X 오른쪽, +Y 앞, +Z 위)으로 돌리는 행렬. size: 맞출 상자(x, y, z).
+    y·z는 같은 배율로 맞추고(모양 유지), 두께 x만 상자를 넘으면 따로 줄인다. 표면은 총(bot_detail)과 같게
+    금속·거칠기 지도를 빼고 상수로 둔다(생성 지도는 거울처럼 번들거린다).
+    """
+    imgs_before = set(bpy.data.images)
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=path)
+    new = [o for o in bpy.data.objects if o not in before]
+    meshes = [o for o in new if o.type == 'MESH']
+    assert meshes, 'no mesh in ' + path
+    for o in meshes:
+        mw = o.matrix_world.copy()
+        o.parent = None
+        o.matrix_world = Matrix.Identity(4)
+        o.data.transform(mw)
+    if len(meshes) > 1:
+        with bpy.context.temp_override(active_object=meshes[0], selected_editable_objects=meshes, selected_objects=meshes):
+            bpy.ops.object.join()
+    ob = meshes[0]
+    for o in new:
+        if o is not ob and o.name in bpy.data.objects and o.type != 'MESH':
+            bpy.data.objects.remove(o, do_unlink=True)
+    me = ob.data
+    me.transform(rot.to_4x4())
+    lo, hi = _bbox([v.co for v in me.vertices])
+    dim = hi - lo
+    k = min(size[1] / dim.y, size[2] / dim.z)
+    kx = min(k, size[0] / dim.x)
+    mid = (lo + hi) / 2
+    me.transform(Matrix.Translation(center) @ Matrix.Diagonal((kx, k, k, 1.0)) @ Matrix.Translation(-mid))
+    me.update()
+    ob.name = name
+    me.name = name
+    for p in me.polygons:
+        p.use_smooth = True
+    mat = me.materials[0]
+    mat.name = material_name
+    bsdf = next(n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+    for key, val in (('Metallic', 0.3), ('Roughness', 0.55)):
+        sock = bsdf.inputs[key]
+        for link in list(sock.links):
+            mat.node_tree.links.remove(link)
+        sock.default_value = val
+    for img in bpy.data.images:
+        if img not in imgs_before and (img.size[0] > tex_size or img.size[1] > tex_size):
+            print('PROP_TEX', img.name, tuple(img.size), '->', tex_size)
+            img.scale(tex_size, tex_size)
+    if uv_name and me.uv_layers and me.uv_layers[0].name != uv_name:
+        me.uv_layers[0].name = uv_name
+    ob.vertex_groups.clear()
+    ob.vertex_groups.new(name=group).add(list(range(len(me.vertices))), 1.0, 'REPLACE')
+    print('PROP', name, 'TRIS', sum(len(p.vertices) - 2 for p in me.polygons), 'DIM', tuple(round(v * s, 3) for v, s in zip(dim, (kx, k, k))))
+    return ob
+
+
 def recolor_blue(ob):
     """본체 색 텍스처의 따뜻한 색(주황 갑옷, 노란 발광)을 파란색·청록색으로 바꾼다 → 적과 같은 모델의 주인공 판."""
     import numpy as np

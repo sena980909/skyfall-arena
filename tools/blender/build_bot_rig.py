@@ -251,9 +251,16 @@ if USE_DETAIL:
     L.PARTS.clear()
     L.PARTS.append(mesh_ob)
 if MODE in ('player', 'fp'):
-    # 재장전 때 빠졌다 들어가는 탄창 소품. 평소에는 총의 탄창 안에 숨어 있다(상세 메시의 탄창은 총과 한 덩어리라 따로 못 뺀다)
-    L.box('mag_prop', D_GUN @ R.MAG_CENTER, (0.034, 0.10, 0.10), L.material('player_mag', (0.03, 0.035, 0.045), rough=0.5, metal=0.5), 'mag', bevel=0.006)
-    L.box('mag_prop_glow', D_GUN @ (R.MAG_CENTER + Vector((0, 0, -0.01))), (0.036, 0.07, 0.012), L.material('player_mag_glow', (0.05, 0.3, 0.4), rough=0.3, emit=(0.2, 0.85, 1.0), emit_strength=2.0), 'mag', bevel=0.002)
+    # 재장전 때 빠졌다 들어가는 탄창. 평소에는 총의 탄창 안에 숨어 있다(상세 메시의 탄창은 총과 한 덩어리라 따로 못 뺀다)
+    MAG_DETAIL = os.path.join(PROJECT, 'assets_src', 'higgs', 'mag_detail.glb')
+    if MODE == 'fp' and USE_DETAIL and os.path.exists(MAG_DETAIL):
+        # 1인칭: 총과 같은 방식으로 만든 상세 메시(총 그림을 참고로 그린 탄창 → 이미지→3D). 단순한 상자는 총 옆에서 따로 놀았다.
+        # 생성 메시의 축은 리그와 같다(X 두께, Y 길이, Z 높이, 바닥판이 -Z). 3인칭은 화면에서 몇 픽셀이라 상자 그대로 둔다
+        L.PARTS.append(BD.import_prop(MAG_DETAIL, 'mag_prop', 'mag', D_GUN @ R.MAG_CENTER, (0.036, 0.105, 0.10), Matrix.Identity(3),
+                                      uv_name=mesh_ob.data.uv_layers[0].name if mesh_ob.data.uv_layers else None))
+    else:
+        L.box('mag_prop', D_GUN @ R.MAG_CENTER, (0.034, 0.10, 0.10), L.material('player_mag', (0.03, 0.035, 0.045), rough=0.5, metal=0.5), 'mag', bevel=0.006)
+        L.box('mag_prop_glow', D_GUN @ (R.MAG_CENTER + Vector((0, 0, -0.01))), (0.036, 0.07, 0.012), L.material('player_mag_glow', (0.05, 0.3, 0.4), rough=0.3, emit=(0.2, 0.85, 1.0), emit_strength=2.0), 'mag', bevel=0.002)
     mesh_ob = L.join_parts('BotMesh')
 print('TRIS', sum(len(p.vertices) - 2 for p in mesh_ob.data.polygons), 'VERTS', len(mesh_ob.data.vertices), 'MATS', len(mesh_ob.data.materials))
 
