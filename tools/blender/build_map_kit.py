@@ -8,11 +8,13 @@ import math
 import os
 import sys
 
+import bmesh
 import bpy
 from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib_build as L  # noqa: E402
+import bot_detail as BD  # noqa: E402
 
 argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else ['.']
 PROJECT = os.path.abspath(argv[0])
@@ -52,6 +54,29 @@ _vc.layer_name = 'Col'
 PAINT.node_tree.links.new(_vc.outputs['Color'], _bsdf.inputs['Base Color'])
 
 MODULES = []
+
+
+GEN = os.path.join(PROJECT, 'assets_src', 'higgs')
+USE_GEN = 'no_gen' not in argv
+
+
+def generated(name, file, size, yaw=0.0, tex=512, uniform=False, max_tris=0):
+    """힉스필드로 만든 소품 메시(그림 → 이미지→3D)가 있으면 그것을 모듈로 쓴다. 없거나 인자에 no_gen이 있으면 None → 절차 모델.
+    size = (X 길이, Y 깊이, Z 높이). 재질은 '<모듈 이름>_gen' 하나(자체 텍스처)라서 드로콜은 모듈당 하나다."""
+    path = os.path.join(GEN, file)
+    if not USE_GEN or not os.path.exists(path):
+        return None
+    ob = BD.import_static(path, name, size, yaw=yaw, tex_size=tex, uniform=uniform, max_tris=max_tris)
+    MODULES.append(ob)
+    return ob
+
+
+def same_mesh(src, name):
+    """같은 메시를 가리키는 모듈 하나 더(파일에는 메시가 한 번만 들어간다)."""
+    ob = bpy.data.objects.new(name, src.data)
+    bpy.context.scene.collection.objects.link(ob)
+    MODULES.append(ob)
+    return ob
 
 
 def B(name, c, s, m, bevel=0.0, rot=None, xform=None):
@@ -259,13 +284,42 @@ def lamp():
     finish('kit_lamp')
 
 
-container('a', (0.62, 0.21, 0.045))
-container('b', (0.045, 0.3, 0.34))
-container('c', (0.07, 0.15, 0.42))
-container('d', (0.23, 0.25, 0.28))
-crate(1.0, 'kit_crate')
-crate(2.0, 'kit_crate_tall')
-barrier()
+# 컨테이너·상자·방벽·단말은 생성 메시가 있으면 그것을 쓴다
+gen_container = generated('kit_container_a', 'prop_container.glb', (6, 2.5, 2.5), tex=1024, max_tris=1800)
+if gen_container:
+    # 색 변형은 게임이 텍스처 채널을 바꿔 낸다(GreyboxMap.applyKit): 메시·텍스처는 하나만 싣는다
+    for tag in 'bcd':
+        same_mesh(gen_container, 'kit_container_' + tag)
+else:
+    container('a', (0.62, 0.21, 0.045))
+    container('b', (0.045, 0.3, 0.34))
+    container('c', (0.07, 0.15, 0.42))
+    container('d', (0.23, 0.25, 0.28))
+gen_crate = generated('kit_crate', 'prop_crate.glb', (2, 2, 1), max_tris=2600)
+if gen_crate:
+    # 높은 상자(2m) = 상자 둘을 쌓은 것. 위 상자는 90° 돌려 같은 면이 겹쳐 보이지 않게 한다
+    top = gen_crate.data.copy()
+    top.transform(Matrix.Translation((0, 0, 1)) @ Matrix.Rotation(math.pi / 2, 4, 'Z'))
+    bm = bmesh.new()
+    bm.from_mesh(gen_crate.data)
+    bm.from_mesh(top)
+    tall = bpy.data.meshes.new('kit_crate_tall')
+    bm.to_mesh(tall)
+    bm.free()
+    bpy.data.meshes.remove(top)
+    for p in tall.polygons:
+        p.use_smooth = True
+    tall.materials.append(gen_crate.data.materials[0])
+    ob = bpy.data.objects.new('kit_crate_tall', tall)
+    bpy.context.scene.collection.objects.link(ob)
+    MODULES.append(ob)
+else:
+    crate(1.0, 'kit_crate')
+    crate(2.0, 'kit_crate_tall')
+if not generated('kit_barrier', 'prop_barrier.glb', (6, 0.6, 1.1), tex=1024, max_tris=1500):
+    barrier()
+# 임무 단말(중계기·신호기·전송 단말): 충돌 상자가 없어 비율을 그대로 둔다. 기준 높이 2m, 게임이 높이에 맞춰 줄인다
+generated('kit_console', 'prop_console.glb', (0.9, 0.9, 2.0), uniform=True)
 deck()
 pillar()
 rail()
@@ -278,7 +332,8 @@ print('TOTAL_TRIS', sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o 
 # ---------------------------------------------------------------- 미리보기 (한 줄로 늘어놓고 렌더 후 원점 복귀)
 cam = L.setup_preview(res=(1400, 700), fov_deg=30)
 lineup = {'kit_container_a': (-9, 0, 0), 'kit_container_b': (-9, 4, 0), 'kit_crate': (-3.5, 0, 0), 'kit_crate_tall': (-3.5, 3.5, 0),
-          'kit_barrier': (2, -1.5, 0), 'kit_pillar': (0, 3, 0), 'kit_rail': (4, 5, 0), 'kit_wall': (6, 9, 0), 'kit_stairs': (7, 0, 0)}
+          'kit_barrier': (2, -1.5, 0), 'kit_pillar': (0, 3, 0), 'kit_rail': (4, 5, 0), 'kit_wall': (6, 9, 0), 'kit_stairs': (7, 0, 0),
+          'kit_console': (-0.5, -2.5, 0)}
 for o in MODULES:
     o.hide_render = o.name not in lineup
     if o.name in lineup:
@@ -301,7 +356,9 @@ for o in list(bpy.context.scene.objects):
 out = os.path.join(PROJECT, 'public', 'assets', 'models', 'map_kit.glb')
 want = dict(filepath=out, export_format='GLB', use_selection=False, export_yup=True, export_apply=True,
             export_animations=False, export_skins=False, export_materials='EXPORT', export_cameras=False, export_lights=False,
-            export_extras=False, export_vertex_color='ACTIVE', export_all_vertex_colors=False)
+            export_extras=False, export_vertex_color='ACTIVE', export_all_vertex_colors=False,
+            # 생성 소품의 텍스처는 JPEG로 싣는다(PNG면 소품 넷에 5MB가 넘는다)
+            export_image_format='JPEG', export_jpeg_quality=85, export_image_quality=85)
 props = set(bpy.ops.export_scene.gltf.get_rna_type().properties.keys())
 print('EXPORT_SKIPPED_ARGS', sorted(set(want) - props))
 bpy.ops.export_scene.gltf(**{k: v for k, v in want.items() if k in props})

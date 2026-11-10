@@ -1,3 +1,5 @@
+import type { Material } from 'three';
+import { applyHueSwap } from '@/render/HueSwap';
 import {
   Box3, BoxGeometry, CanvasTexture, Color, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PointLight, SRGBColorSpace, Texture, Vector3,
 } from 'three';
@@ -374,6 +376,22 @@ export class GreyboxMap {
    * Blender 제작 모듈 키트로 외형 교체. 충돌 상자(colliders)와 탄 판정용 메시(meshes)는 그대로 두고 보이지 않게만 한다
    * (three.js 레이캐스트는 visible을 보지 않으므로 판정·시야·길찾기는 바뀌지 않는다).
    */
+  /** 생성 소품(재질 이름이 '_gen'으로 끝난다)의 색 변형. 변형 재질은 원본마다 하나만 만들어 같이 쓴다 */
+  private readonly genVariants = new Map<Material, Material>();
+  private recolorGenerated(inst: Object3D): void {
+    inst.traverse((o) => {
+      const m = o as Mesh;
+      if (!m.isMesh || Array.isArray(m.material) || !m.material.name.endsWith('_gen')) return;
+      let v = this.genVariants.get(m.material);
+      if (!v) {
+        v = m.material.clone();
+        applyHueSwap(v, 'bgr');
+        this.genVariants.set(m.material, v);
+      }
+      m.material = v;
+    });
+  }
+
   applyKit(kit: Group): void {
     kit.traverse((o) => {
       const m = o as Mesh;
@@ -436,6 +454,8 @@ export class GreyboxMap {
       }
       const inst = place(name, true, parent);
       if (!inst) continue;
+      // 생성 컨테이너는 메시·텍스처가 하나다. 절반은 색 채널을 바꿔 파란 컨테이너로 보이게 한다
+      if (t.kind === 'container' && (name.endsWith('_b') || name.endsWith('_c'))) this.recolorGenerated(inst);
       // 모듈은 X로 길다. 상자가 Z로 길면 90° 돌린다
       const turn = ref[0] !== ref[2] && t.sz > t.sx;
       inst.position.set(t.cx, t.y0, t.cz);

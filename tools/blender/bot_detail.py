@@ -349,13 +349,9 @@ def swap_in(proc, path, tex_size=1024, smooth_passes=2, visor_material='bot_viso
     return det
 
 
-def import_prop(path, name, group, center, size, rot, uv_name=None, tex_size=512, material_name='mag_detail'):
-    """작은 소품(탄창)의 생성 메시를 불러와 본 하나에 통째로 붙인다.
-
-    rot: 불러온 메시의 축을 리그 축(+X 오른쪽, +Y 앞, +Z 위)으로 돌리는 행렬. size: 맞출 상자(x, y, z).
-    y·z는 같은 배율로 맞추고(모양 유지), 두께 x만 상자를 넘으면 따로 줄인다. 표면은 총(bot_detail)과 같게
-    금속·거칠기 지도를 빼고 상수로 둔다(생성 지도는 거울처럼 번들거린다).
-    """
+def _import_generated(path, name, material_name, tex_size, metal, rough):
+    """생성 GLB 하나를 불러와 메시 하나로 합친다. 표면은 금속·거칠기 지도를 빼고 상수로 두고(생성 지도는 거울처럼
+    번들거린다) 텍스처는 tex_size로 줄인다. 돌려주는 오브젝트의 정점은 월드 좌표 그대로다."""
     imgs_before = set(bpy.data.images)
     before = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=path)
@@ -375,14 +371,6 @@ def import_prop(path, name, group, center, size, rot, uv_name=None, tex_size=512
         if o is not ob and o.name in bpy.data.objects and o.type != 'MESH':
             bpy.data.objects.remove(o, do_unlink=True)
     me = ob.data
-    me.transform(rot.to_4x4())
-    lo, hi = _bbox([v.co for v in me.vertices])
-    dim = hi - lo
-    k = min(size[1] / dim.y, size[2] / dim.z)
-    kx = min(k, size[0] / dim.x)
-    mid = (lo + hi) / 2
-    me.transform(Matrix.Translation(center) @ Matrix.Diagonal((kx, k, k, 1.0)) @ Matrix.Translation(-mid))
-    me.update()
     ob.name = name
     me.name = name
     for p in me.polygons:
@@ -390,7 +378,7 @@ def import_prop(path, name, group, center, size, rot, uv_name=None, tex_size=512
     mat = me.materials[0]
     mat.name = material_name
     bsdf = next(n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
-    for key, val in (('Metallic', 0.3), ('Roughness', 0.55)):
+    for key, val in (('Metallic', metal), ('Roughness', rough)):
         sock = bsdf.inputs[key]
         for link in list(sock.links):
             mat.node_tree.links.remove(link)
@@ -399,11 +387,64 @@ def import_prop(path, name, group, center, size, rot, uv_name=None, tex_size=512
         if img not in imgs_before and (img.size[0] > tex_size or img.size[1] > tex_size):
             print('PROP_TEX', img.name, tuple(img.size), '->', tex_size)
             img.scale(tex_size, tex_size)
+    return ob
+
+
+def import_prop(path, name, group, center, size, rot, uv_name=None, tex_size=512, material_name='mag_detail'):
+    """작은 소품(탄창)의 생성 메시를 불러와 본 하나에 통째로 붙인다.
+
+    rot: 불러온 메시의 축을 리그 축(+X 오른쪽, +Y 앞, +Z 위)으로 돌리는 행렬. size: 맞출 상자(x, y, z).
+    y·z는 같은 배율로 맞추고(모양 유지), 두께 x만 상자를 넘으면 따로 줄인다. 표면은 총(bot_detail)과 같다.
+    """
+    ob = _import_generated(path, name, material_name, tex_size, 0.3, 0.55)
+    me = ob.data
+    me.transform(rot.to_4x4())
+    lo, hi = _bbox([v.co for v in me.vertices])
+    dim = hi - lo
+    k = min(size[1] / dim.y, size[2] / dim.z)
+    kx = min(k, size[0] / dim.x)
+    mid = (lo + hi) / 2
+    me.transform(Matrix.Translation(center) @ Matrix.Diagonal((kx, k, k, 1.0)) @ Matrix.Translation(-mid))
+    me.update()
     if uv_name and me.uv_layers and me.uv_layers[0].name != uv_name:
         me.uv_layers[0].name = uv_name
     ob.vertex_groups.clear()
     ob.vertex_groups.new(name=group).add(list(range(len(me.vertices))), 1.0, 'REPLACE')
     print('PROP', name, 'TRIS', sum(len(p.vertices) - 2 for p in me.polygons), 'DIM', tuple(round(v * s, 3) for v, s in zip(dim, (kx, k, k))))
+    return ob
+
+
+def import_static(path, name, size, yaw=0.0, tex_size=512, material_name=None, uniform=False, max_tris=0):
+    """맵 소품의 생성 메시를 불러와 모듈 상자(size = X 길이, Y 깊이, Z 높이)에 축마다 꽉 맞춘다. 원점 = 바닥 중앙.
+
+    생성 메시는 Z가 위다. 수평으로 긴 쪽이 X가 되게 90° 돌리고(상자가 X로 길 때), yaw(라디안)로 앞뒤를 더 돌릴 수 있다.
+    충돌 상자와 겉모습이 같아야 하므로 비율이 조금 달라도 상자에 맞춰 늘린다(축별 배율을 찍는다).
+    uniform이면 높이만 맞추고 비율은 그대로 둔다(충돌 상자가 없는 소품).
+    """
+    ob = _import_generated(path, name, material_name or name + '_gen', tex_size, 0.25, 0.6)
+    tris = sum(len(p.vertices) - 2 for p in ob.data.polygons)
+    if max_tris and tris > max_tris:
+        mod = ob.modifiers.new('dec', 'DECIMATE')
+        mod.ratio = max_tris / tris
+        with bpy.context.temp_override(object=ob, active_object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+        print('STATIC_DECIMATE', name, tris, '->', sum(len(p.vertices) - 2 for p in ob.data.polygons))
+    me = ob.data
+    lo, hi = _bbox([v.co for v in me.vertices])
+    dim = hi - lo
+    turn = (dim.y > dim.x) != (size[1] > size[0])
+    me.transform(Matrix.Rotation((math.pi / 2 if turn else 0.0) + yaw, 4, 'Z'))
+    lo, hi = _bbox([v.co for v in me.vertices])
+    dim = hi - lo
+    mid = (lo + hi) / 2
+    k = (size[0] / dim.x, size[1] / dim.y, size[2] / dim.z)
+    if uniform:
+        k = (k[2], k[2], k[2])
+    me.transform(Matrix.Translation((0, 0, size[2] / 2)) @ Matrix.Diagonal((k[0], k[1], k[2], 1.0)) @ Matrix.Translation(-mid))
+    me.update()
+    ob.vertex_groups.clear()
+    kmin = min(k)
+    print('STATIC', name, 'TRIS', sum(len(p.vertices) - 2 for p in me.polygons), 'TURN', turn, 'STRETCH', tuple(round(v / kmin, 2) for v in k))
     return ob
 
 

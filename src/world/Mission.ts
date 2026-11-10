@@ -90,6 +90,10 @@ const HEAVY: BotOptions = { hpMult: 1.8, scale: 1.15 };
 const BOSS: BotOptions = { hpMult: 3, scale: 1.35, boss: true };
 export const MISSION_SCORE = { relay: 200, upload: 300, cell: 150, beacon: 200, defend: 400, extract: 500 };
 
+/** 생성 단말 모델(kit_console)의 기준 높이, 정면을 남쪽(+Z)으로 돌리는 각, 기둥을 두르는 상태 고리의 반지름(기준 크기에서) */
+const CONSOLE_REF_HEIGHT = 2.0;
+const CONSOLE_YAW = Math.PI;
+const CONSOLE_RING = 0.34;
 const RED = 0xff5030;
 const CYAN = 0x4fe3ff;
 
@@ -186,22 +190,41 @@ export class Mission {
     if (this.built) return;
     this.built = true;
     const dark = new MeshStandardMaterial({ color: 0x1b2230, roughness: 0.6, metalness: 0.4 });
+    // 단말 몸체: 맵 키트에 생성 모델(kit_console, 기준 높이 2m)이 있으면 그것을 높이에 맞춰 쓰고, 없으면 상자·기둥으로 만든다.
+    // 상태(빨강 → 청록)를 알리는 고리와 등은 어느 쪽이든 따로 붙인다(게임이 색을 바꾼다)
+    const kitConsole = this.ctx.assets?.mapKit?.getObjectByName('kit_console') ?? null;
     const makeConsole = (h: number): { group: Group; light: MeshStandardMaterial } => {
       const group = new Group();
       const light = new MeshStandardMaterial({ color: 0x221008, emissive: RED, emissiveIntensity: 1.6, roughness: 0.4 });
-      const base = new Mesh(new BoxGeometry(0.9, 0.4, 0.9), dark);
-      base.position.y = 0.2;
-      const post = new Mesh(new CylinderGeometry(0.14, 0.2, h, 10), dark);
-      post.position.y = 0.4 + h / 2;
-      const head = new Mesh(new BoxGeometry(0.5, 0.3, 0.5), dark);
-      head.position.y = 0.4 + h + 0.15;
-      const ring = new Mesh(new TorusGeometry(0.34, 0.05, 8, 20), light);
+      const top = 0.7 + h;
+      let ringR = 0.34;
+      if (kitConsole) {
+        const model = kitConsole.clone(true);
+        const k = top / CONSOLE_REF_HEIGHT;
+        model.scale.setScalar(k);
+        model.rotation.y = CONSOLE_YAW;
+        model.traverse((o) => {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        });
+        group.add(model);
+        ringR = CONSOLE_RING * k;
+      } else {
+        const base = new Mesh(new BoxGeometry(0.9, 0.4, 0.9), dark);
+        base.position.y = 0.2;
+        const post = new Mesh(new CylinderGeometry(0.14, 0.2, h, 10), dark);
+        post.position.y = 0.4 + h / 2;
+        const head = new Mesh(new BoxGeometry(0.5, 0.3, 0.5), dark);
+        head.position.y = 0.4 + h + 0.15;
+        for (const m of [base, post, head]) m.castShadow = true;
+        group.add(base, post, head);
+      }
+      const ring = new Mesh(new TorusGeometry(ringR, 0.05, 8, 24), light);
       ring.rotation.x = Math.PI / 2;
       ring.position.y = 0.4 + h * 0.55;
       const lamp = new Mesh(new BoxGeometry(0.3, 0.12, 0.3), light);
-      lamp.position.y = 0.4 + h + 0.36;
-      for (const m of [base, post, head]) m.castShadow = true;
-      group.add(base, post, head, ring, lamp);
+      lamp.position.y = top + 0.06;
+      group.add(ring, lamp);
       return { group, light };
     };
     for (const pos of RELAY_SPOTS) {
