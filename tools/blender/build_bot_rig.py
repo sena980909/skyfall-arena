@@ -148,6 +148,14 @@ REST['muzzle'] = D_GUN @ R.MUZZLE
 PARENT = {'torso': 'hips', 'head': 'torso', 'armsgun': 'torso', 'muzzle': 'armsgun'}
 mesh_ob = L.join_parts('BotMesh')
 L.box_uv(mesh_ob, 0.45)
+# 힉스필드 상세 메시가 있으면 겉모습을 그것으로 바꾼다(본·애니메이션은 그대로). 인자에 no_detail을 주면 절차 모델로 빌드
+DETAIL = os.path.join(PROJECT, 'assets_src', 'higgs', 'bot_detail.glb')
+USE_DETAIL = os.path.exists(DETAIL) and 'no_detail' not in argv
+if USE_DETAIL:
+    import bot_detail as BD  # noqa: E402
+    mesh_ob = BD.swap_in(mesh_ob, DETAIL)
+    L.PARTS.clear()
+    L.PARTS.append(mesh_ob)
 print('TRIS', sum(len(p.vertices) - 2 for p in mesh_ob.data.polygons), 'VERTS', len(mesh_ob.data.vertices), 'MATS', len(mesh_ob.data.materials))
 
 arm_data = bpy.data.armatures.new('BotRig')
@@ -378,7 +386,8 @@ out = os.path.join(PROJECT, 'public', 'assets', 'models', 'bot_rig.glb')
 want = dict(filepath=out, export_format='GLB', use_selection=False, export_yup=True, export_apply=False,
             export_skins=True, export_animations=True, export_animation_mode='NLA_TRACKS', export_force_sampling=True,
             export_def_bones=False, export_optimize_animation_size=False, export_frame_range=False,
-            export_materials='EXPORT', export_cameras=False, export_lights=False, export_extras=False)
+            export_materials='EXPORT', export_cameras=False, export_lights=False, export_extras=False,
+            export_image_format='JPEG', export_image_quality=86, export_jpeg_quality=86)
 props = set(bpy.ops.export_scene.gltf.get_rna_type().properties.keys())
 bpy.ops.export_scene.gltf(**{k: v for k, v in want.items() if k in props})
 print('EXPORTED', out, os.path.getsize(out))

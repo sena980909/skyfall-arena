@@ -107,6 +107,8 @@ export function applyDetailTextures(root: Object3D, d: DetailTextures): void {
       if (seen.has(mat)) continue;
       seen.add(mat);
       const sm = mat as MeshStandardMaterial;
+      // 자체 텍스처가 있는 재질(힉스필드 상세 모델)은 그대로 둔다
+      if (sm.map) continue;
       const [tex, bump] = pick(sm.name);
       if (!tex) continue;
       // 검은 재질: 뒤집은 텍스처의 바탕이 어두운 만큼 색을 밝혀 바탕 밝기는 그대로 두고 패널 선만 밝게 띄운다

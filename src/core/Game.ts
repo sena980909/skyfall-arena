@@ -373,7 +373,7 @@ export class Game {
       this.lastHpSeen = hp;
       this.post.setHealth(!inGame ? 1 : this.state === 'dead' ? 0.15 : hp / this.player.maxHp);
       // 느린 기기 보호: 플레이 첫 4초쯤(240프레임)의 평균이 40fps에 못 미치면 후처리를 끈다. F7로 다시 켤 수 있다
-      if (!this.perfChecked && this.post.enabled && this.state === 'playing' && dt > 0) {
+      if (!this.perfChecked && this.post.enabled && this.state === 'playing' && dt > 0 && dt < 0.1 && document.visibilityState === 'visible') {
         this.perfFrames++;
         this.perfTime += dt;
         if (this.perfFrames >= 240) {

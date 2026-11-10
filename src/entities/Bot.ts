@@ -266,6 +266,8 @@ export class Bot implements Hittable, Healable {
           mm.envMapIntensity = 0.4;
           if (mm.name === 'bot_armor') mm.color.copy(team);
           else if (mm.name === 'armor_blue') mm.color.copy(team).multiplyScalar(0.5);
+          // 상세 모델은 텍스처에 색이 들어 있다. 보스만 붉게 물들인다
+          else if (mm.name === 'bot_detail' && this.isBoss) mm.color.setRGB(1.0, 0.42, 0.42);
           if (mm.name === 'bot_visor') {
             mm.color.setHex(this.visorColor);
             mm.emissive.setHex(this.visorColor);
