@@ -42,6 +42,9 @@ const ENGAGE_MIN = 10;
 const RETREAT_COOLDOWN = 15;
 
 /** AI 봇 (레이븐). 플레이어와 같은 무기/컨트롤러를 공유하고 입력만 AI가 공급 */
+/** Locomotion clips that share the same stride phase layout (left foot plants at phase 0). */
+const GAIT_CLIPS = new Set(['walk', 'jog', 'run', 'back']);
+
 export class Bot implements Hittable, Healable {
   readonly hero = RAVEN;
   readonly group = new Group();
@@ -137,6 +140,8 @@ export class Bot implements Hittable, Healable {
   private moveHoldUntil = 0;
   private backHoldUntil = 0;
   private animHoldUntil = 0;
+  /** 걸음 종류를 고르는 데 쓰는 '의도한 속도': 올라갈 때는 즉시, 내려갈 때는 천천히 따라간다 */
+  private gaitSpeed = 0;
   private legsYaw = 0;
   private facingYaw = 0;
   /** 손에 든 라이플의 총구 (모델 적용 시) */
@@ -631,8 +636,16 @@ export class Bot implements Hittable, Healable {
     const now = this.ctx.now;
     // 최소 0.2초는 같은 클립 유지 (사망 등 강제 전환 제외)
     if (!force && this.currentAnim !== 'idle' && now < this.animHoldUntil) return;
-    this.animHoldUntil = now + 0.2;
-    if ((this.animWeights[name] ?? 0) < 0.01) next.reset();
+    // 걸음끼리(달리기↔조깅 등)는 더 오래 유지해 속도 경계에서 깜빡이지 않게 한다
+    this.animHoldUntil = now + (name === 'idle' || this.currentAnim === 'idle' ? 0.2 : 0.4);
+    if ((this.animWeights[name] ?? 0) < 0.01) {
+      next.reset();
+      // Gait-to-gait: start the new clip at the same stride phase so the feet line up during the crossfade.
+      const cur = this.actions[this.currentAnim];
+      if (cur && GAIT_CLIPS.has(name) && GAIT_CLIPS.has(this.currentAnim)) {
+        next.time = (cur.time / cur.getClip().duration) * next.getClip().duration;
+      }
+    }
     next.enabled = true;
     next.play();
     this.animFade = Math.max(0.05, fade);
@@ -721,7 +734,14 @@ export class Bot implements Hittable, Healable {
       if (now >= this.backHoldUntil) this.backpedal = false;
     }
     const maxTurn = (this.moving ? 7 : 4) * dt; // 이동 중 ≈ 400°/s, 제자리에서는 천천히
-    this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, wrap(this.legsYaw - this.facingYaw)));
+    let legTurn = wrap(this.legsYaw - this.facingYaw);
+    // 거의 반대로 돌아야 할 때(뒷걸음 → 돌아서 달리기)는 조준 쪽을 지나가는 방향으로 돈다.
+    // 반대쪽으로 돌면 상체가 다리에 끌려갔다가 다시 조준으로 돌아오면서 제자리에서 한 바퀴 돌게 된다.
+    if (Math.abs(legTurn) > 2.6) {
+      const side = wrap(aimYaw - this.facingYaw);
+      if (Math.abs(side) > 0.2 && Math.sign(side) !== Math.sign(legTurn)) legTurn = Math.sign(side) * (Math.PI * 2 - Math.abs(legTurn));
+    }
+    this.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, legTurn));
     this.group.rotation.y = this.facingYaw;
     // 상체: 월드 기준 요를 따로 두고 교전 중엔 조준 방향, 아니면 다리 방향을 각속도 제한(≈570°/s)으로 따라간다.
     // 비틀림 = 상체 요 − 다리 요 → 다리가 휙 돌아도 상체는 조준을 유지한다.
@@ -745,10 +765,15 @@ export class Bot implements Hittable, Healable {
         this.playAnim('shoot', 0.2);
         this.actions.shoot.timeScale = 0.12;
       } else if (this.actions.idle) this.playAnim('idle');
+      this.gaitSpeed = 0;
     } else {
       // 정지에서 출발할 때는 평활화 전 속도로 클립을 고른다(봇은 즉시 최고 속도가 되므로 걷기 클립을 거치면 발이 미끄러진다)
       const rawSp = Math.hypot(this.velocity.x, this.velocity.z);
       const sp = (this.currentAnim === 'idle' ? Math.max(speed, rawSp) : speed) / (this.group.scale.x || 1);
+      // 걸음 종류는 의도한 속도로 고른다. 봇은 즉시 멈추므로 평활화된 속도를 그대로 쓰면
+      // 멈출 때마다 달리기 → 조깅 → 걷기를 차례로 거치며 발이 미끄러진다. 내려갈 때는 초당 6m/s씩만 따라간다.
+      this.gaitSpeed = Math.max(speed, rawSp, this.gaitSpeed - dt * 6);
+      const gs = this.gaitSpeed / (this.group.scale.x || 1);
       const ts = (clipSpeed: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, sp / clipSpeed));
       const cs = this.clipSpeed;
       if (this.backpedal && this.actions.back) {
@@ -758,13 +783,13 @@ export class Bot implements Hittable, Healable {
         this.playAnim('walk', 0.15);
         this.actions.walk.timeScale = -ts(cs.walk, 0.5, 2.2);
       } else {
-        // 전진: 속도에 가장 가까운 클립(걷기·조깅·달리기). 경계는 두 클립 속도의 기하평균, ±8% 히스테리시스
+        // 전진: 속도에 가장 가까운 클립(걷기·조깅·달리기). 경계는 두 클립 속도의 기하평균, ±15% 히스테리시스
         const cands = (['walk', 'jog', 'run'] as const).filter((n) => this.actions[n]);
         let pick = cands[0];
         for (let i = 0; i < cands.length - 1; i++) {
           const thr = Math.sqrt(cs[cands[i]] * cs[cands[i + 1]]);
-          const hyst = this.currentAnim === cands[i + 1] ? 0.92 : this.currentAnim === cands[i] ? 1.08 : 1;
-          if (sp > thr * hyst) pick = cands[i + 1];
+          const hyst = this.currentAnim === cands[i + 1] ? 0.85 : this.currentAnim === cands[i] ? 1.15 : 1;
+          if (gs > thr * hyst) pick = cands[i + 1];
         }
         if (pick) {
           this.playAnim(pick, 0.15);

@@ -123,6 +123,9 @@ export class Player implements Hittable, Healable {
   private fpRigActive = false;
   /** 상세 1인칭 모델(팔·총 한 덩어리) 사용 중 */
   private fpDetailActive = false;
+  private fpCant = 0;
+  private fpDown = 0;
+  private fpSeat = 0;
   /** 3인칭 시점 (V로 전환). 몸 모델이 있어야 켤 수 있다 */
   thirdPerson = false;
   body: PlayerBody | null = null;
@@ -671,19 +674,27 @@ export class Player implements Hittable, Healable {
     const reloadDip = !this.fpRigActive && !this.fpDetailActive && this.weapon.reloading ? Math.sin(this.weapon.reloadProgress(now) * Math.PI) : 0;
     // 상세 1인칭 모델의 재장전: 팔·총이 한 덩어리라 탄창 교체는 화면 아래에서 일어난다.
     // 구간은 3인칭 재장전(tools/blender/reload_timeline.py)과 같다: 총을 기울이고 → 내려서 탄창을 갈고 → 밀어 넣는 충격 → 복귀
-    let dCant = 0;
-    let dDown = 0;
-    let dSeat = 0;
+    let tCant = 0;
+    let tDown = 0;
+    let tSeat = 0;
     if (this.fpDetailActive && this.weapon.reloading) {
       const rt = this.weapon.reloadProgress(now) * this.weapon.def.reloadTime;
       const sm = (a0: number, a1: number): number => {
         const k = clamp((rt - a0) / (a1 - a0), 0, 1);
         return k * k * (3 - 2 * k);
       };
-      dCant = sm(0.03, 0.22) * (1 - sm(1.1, 1.34));
-      dDown = sm(0.16, 0.42) * (1 - sm(0.9, 1.12));
-      dSeat = sm(0.88, 0.93) * (1 - sm(0.93, 1.02));
+      tCant = sm(0.03, 0.22) * (1 - sm(1.1, 1.34));
+      tDown = sm(0.16, 0.42) * (1 - sm(0.9, 1.12));
+      tSeat = sm(0.88, 0.93) * (1 - sm(0.93, 1.02));
     }
+    // 목표값을 바로 쓰지 않고 따라가게 한다: 궁극기로 재장전이 도중에 끝나도 총이 한 프레임에 튀지 않는다
+    const follow = Math.min(1, dt * 14);
+    this.fpCant += (tCant - this.fpCant) * follow;
+    this.fpDown += (tDown - this.fpDown) * follow;
+    this.fpSeat += (tSeat - this.fpSeat) * Math.min(1, dt * 40);
+    const dCant = this.fpCant;
+    const dDown = this.fpDown;
+    const dSeat = this.fpSeat;
     this.updateFpRig(dt, now);
 
     // 재장전: 총구를 살짝 내리고 몸쪽으로 당기며 안쪽으로 굴린다 (위로 들면 카메라 앞 전완 절단면이 화면에 올라온다)

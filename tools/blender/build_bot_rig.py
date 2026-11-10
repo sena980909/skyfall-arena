@@ -311,11 +311,16 @@ def frames(T):
 
 GAITS = {
     # speed m/s, 주기 프레임 수, 접지 비율, 발 들기, 앞기울기(rad), 방향, 골반 좌우 흔들림, 골반 요, 뒤꿈치 닿기/발끝 떼기 각, 발 간격, 접지 중심 이동
-    'walk': dict(v=1.6, n=26, beta=0.60, lift=0.07, lean=0.04, dir=1, sway=0.022, yaw=0.09, hs=0.28, to=0.55, fx=0.10, ys=0.0, crouch=0.02),
-    'jog': dict(v=2.8, n=20, beta=0.44, lift=0.13, lean=0.10, dir=1, sway=0.016, yaw=0.11, hs=0.2, to=0.75, fx=0.085, ys=-0.02, crouch=0.035),
+    'walk': dict(v=1.6, n=18, beta=0.60, lift=0.07, lean=0.04, dir=1, sway=0.022, yaw=0.09, hs=0.28, to=0.55, fx=0.10, ys=0.0, crouch=0.02),
+    'jog': dict(v=2.8, n=18, beta=0.44, lift=0.13, lean=0.10, dir=1, sway=0.016, yaw=0.11, hs=0.2, to=0.75, fx=0.085, ys=-0.02, crouch=0.035),
     'run': dict(v=4.7, n=17, beta=0.32, lift=0.2, lean=0.19, dir=1, sway=0.012, yaw=0.13, hs=0.1, to=0.95, fx=0.07, ys=-0.05, crouch=0.045),
-    'back': dict(v=3.2, n=19, beta=0.46, lift=0.1, lean=-0.03, dir=-1, sway=0.016, yaw=0.08, hs=0.2, to=0.6, fx=0.10, ys=0.03, crouch=0.04),
+    'back': dict(v=3.2, n=15, beta=0.46, lift=0.1, lean=-0.03, dir=-1, sway=0.016, yaw=0.08, hs=0.2, to=0.6, fx=0.10, ys=0.03, crouch=0.04),
 }
+if MODE == 'player':
+    # 주인공은 봇보다 빠르다(기본 5.5, 질주 8.25, 뒷걸음도 5.5m/s). 봇 클립을 빨리 감으면 다리만 바쁘게 돌아서 전용 걸음을 만든다
+    GAITS['run'].update(v=5.5, n=16, beta=0.30)
+    GAITS['back'].update(v=5.5, n=13, beta=0.36, lift=0.12)
+    GAITS['sprint'] = dict(v=8.25, n=13, beta=0.25, lift=0.24, lean=0.26, dir=1, sway=0.010, yaw=0.14, hs=0.05, to=1.05, fx=0.065, ys=-0.07, crouch=0.05)
 for cfg in GAITS.values():
     cfg['T'] = cfg['n'] / FPS
     cfg['s'] = cfg['v'] * cfg['beta'] * cfg['T']

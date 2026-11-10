@@ -4,7 +4,9 @@ import {
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 /** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
-const CLIP_SPEED: Record<string, number> = { walk: 1.6, jog: 2.8, run: 4.7, back: 3.2 };
+const CLIP_SPEED: Record<string, number> = { walk: 1.6, jog: 2.8, run: 5.5, sprint: 8.25, back: 5.5 };
+/** 허리 비틀림 한계(라디안). 넘으면 다리가 조준 쪽으로 끌려온다. 옆걸음 때 몸이 과하게 꼬이지 않게 봇(1.9)보다 작게 둔다 */
+const MAX_TWIST = 1.57;
 /** 재장전 클립이 움직이는 본(팔·총·탄창). 보행 클립에서는 이 트랙을 빼고, 재장전 클립에는 이 트랙만 남긴다 */
 const ARM_TRACK = /^(gun|mag|muzzle|upper[LR]|fore[LR]|hand[LR])\./;
 const UP = new Vector3(0, 1, 0);
@@ -49,6 +51,7 @@ export class PlayerBody {
   private readonly poseBones: Object3D[] = [];
   private legsYaw = 0;
   private backpedal = false;
+  private gait = 'idle';
   private readonly vel = new Vector3();
   private readonly raw = new Vector3();
   private readonly lastPos = new Vector3();
@@ -147,10 +150,15 @@ export class PlayerBody {
       this.backpedal = this.backpedal ? rel > 1.4 : rel > 1.92;
       target = this.backpedal ? moveYaw + Math.PI : moveYaw;
     } else this.backpedal = false;
-    const d = wrap(target - this.legsYaw);
+    let d = wrap(target - this.legsYaw);
+    // 거의 반대로 돌 때는 조준 쪽을 지나가는 방향으로 (반대로 돌면 상체가 한 바퀴 돈다)
+    if (Math.abs(d) > 2.6) {
+      const side = wrap(aimYaw - this.legsYaw);
+      if (Math.abs(side) > 0.2 && Math.sign(side) !== Math.sign(d)) d = Math.sign(side) * (Math.PI * 2 - Math.abs(d));
+    }
     const maxTurn = (moving ? 9 : 5) * dt;
     this.legsYaw += Math.max(-maxTurn, Math.min(maxTurn, d));
-    const twist = Math.max(-1.9, Math.min(1.9, wrap(aimYaw - this.legsYaw)));
+    const twist = Math.max(-MAX_TWIST, Math.min(MAX_TWIST, wrap(aimYaw - this.legsYaw)));
     // 비틀림 한계를 넘으면 다리가 따라 돈다
     this.legsYaw = aimYaw - twist;
     this.group.position.copy(s.pos);
@@ -158,8 +166,17 @@ export class PlayerBody {
 
     // 클립 선택: 속도 구간(걷기·조깅·달리기 발 속도의 기하평균 경계)
     let name = 'idle';
-    if (moving) name = this.backpedal ? 'back' : speed < 2.12 ? 'walk' : speed < 3.63 ? 'jog' : 'run';
+    if (moving) name = this.backpedal ? 'back' : speed < 2.12 ? 'walk' : speed < 3.92 ? 'jog' : speed < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
     if (!this.actions[name]) name = 'idle';
+    // Gait-to-gait: bring the incoming clip to the same stride phase as the outgoing one so the feet line up while blending.
+    if (name !== this.gait) {
+      const from = this.actions[this.gait];
+      const to = this.actions[name];
+      if (from && to && name !== 'idle' && this.gait !== 'idle' && this.weights[name] < 0.05) {
+        to.time = (from.time / from.getClip().duration) * to.getClip().duration;
+      }
+      this.gait = name;
+    }
     let sum = 0;
     for (const k of Object.keys(this.actions)) {
       const w = this.weights[k] + ((k === name ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 10);
