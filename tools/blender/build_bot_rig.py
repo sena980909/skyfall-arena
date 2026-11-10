@@ -257,11 +257,30 @@ if USE_DETAIL:
                              part_of=lambda b: FP_PART.get(b, 'RG'), joined=set(), keep_parts={'LL', 'RG'}, weld=True,
                              plane_cuts={'upper.L': 'fore.L', 'upper.R': 'gun'},
                              strip=GUN_MARK if USE_GUN else None)
+        # The magazine of the generated rifle: the part hanging under the body at 11.5-27.5% of its length from the rear
+        GUN_MAG = ('mag', 0.115, 0.275)
+        GUN_DROP = 0.0
         if USE_GUN:
             # The rifle generated on its own (one clean rear three-quarter picture, 150k faces) replaces the rifle part of
             # the arms-and-rifle mesh: fused with the arms it came out lumpy, worst from the shooter's side.
-            GUN_OB = BD.fit_prop(GUN_DETAIL, 'gun_prop', 'gun', BD.swap_in.stripped, tex_size=2048, max_tris=55000, thin_end=D_GUN @ R.MUZZLE, drop=0.012,
+            GUN_OB = BD.fit_prop(GUN_DETAIL, 'gun_prop', 'gun', BD.swap_in.stripped, tex_size=2048, max_tris=55000, thin_end=D_GUN @ R.MUZZLE, drop=GUN_DROP, split=GUN_MAG,
                                  uv_name=mesh_ob.data.uv_layers[0].name if mesh_ob.data.uv_layers else None)
+            # The generated rifle is shorter than the drawing (its barrel ends 7 cm short of the old muzzle point), so the
+            # muzzle bone - where flashes and tracers start - moves to the real end of the barrel
+            _cos = [v.co for v in GUN_OB.data.vertices]
+            _front = max(c.y for c in _cos)
+            _tip = [c for c in _cos if c.y > _front - 0.012]
+            REST['muzzle'] = Vector((sum(c.x for c in _tip) / len(_tip), _front, sum(c.z for c in _tip) / len(_tip)))
+            # The magazine sits a few centimetres from where the drawing has it: move the magazine bone and the points the
+            # reload clip reaches for (R.MAG_CENTER, R.MAG_BOTTOM are read again when the clip is posed)
+            _lo, _hi = BD.fit_prop.piece_box
+            _c = Vector(((_lo.x + _hi.x) / 2, (_lo.y + _hi.y) / 2, (_lo.z + _hi.z) / 2))
+            _inv = D_GUN.inverted()
+            print('MAG_BONE', [round(v, 3) for v in _c], 'was', [round(v, 3) for v in REST['mag']])
+            R.MAG_CENTER = _inv @ _c
+            R.MAG_BOTTOM = _inv @ Vector((_c.x, _c.y, _lo.z))
+            REST['mag'] = _c
+            print('MUZZLE_BONE', [round(v, 3) for v in REST['muzzle']], 'was', [round(v, 3) for v in (D_GUN @ R.MUZZLE)])
     else:
         mesh_ob = BD.swap_in(mesh_ob, DETAIL)
     L.PARTS.clear()
@@ -271,7 +290,9 @@ if USE_DETAIL:
 if MODE in ('player', 'fp'):
     # 재장전 때 빠졌다 들어가는 탄창. 평소에는 총의 탄창 안에 숨어 있다(상세 메시의 탄창은 총과 한 덩어리라 따로 못 뺀다)
     MAG_DETAIL = os.path.join(PROJECT, 'assets_src', 'higgs', 'mag_detail.glb')
-    if MODE == 'fp' and USE_DETAIL and os.path.exists(MAG_DETAIL):
+    if USE_GUN:
+        pass  # the rifle generated on its own carries its magazine, cut loose and bound to the 'mag' bone (fit_prop)
+    elif MODE == 'fp' and USE_DETAIL and os.path.exists(MAG_DETAIL):
         # 1인칭: 총과 같은 방식으로 만든 상세 메시(총 그림을 참고로 그린 탄창 → 이미지→3D). 단순한 상자는 총 옆에서 따로 놀았다.
         # 생성 메시의 축은 리그와 같다(X 두께, Y 길이, Z 높이, 바닥판이 -Z). 3인칭은 화면에서 몇 픽셀이라 상자 그대로 둔다
         L.PARTS.append(BD.import_prop(MAG_DETAIL, 'mag_prop', 'mag', D_GUN @ R.MAG_CENTER, (0.036, 0.105, 0.10), Matrix.Identity(3),

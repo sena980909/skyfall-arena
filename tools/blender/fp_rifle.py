@@ -24,6 +24,8 @@ GRIP_CENTER = Vector((0.0, P(432, 250)[0], P(432, 250)[1]))
 HANDGUARD_BOTTOM = Vector((0.0, P(215, 212)[0], P(215, 212)[1]))
 MAG_CENTER = Vector((0.0, P(575, 250)[0], P(575, 250)[1]))
 MAG_BOTTOM = Vector((0.0, P(578, 298)[0], P(578, 298)[1]))
+# Height at which the magazine enters the body (just under the body's lower edge, 214 px on the sheet)
+MAG_TOP_Z = P(575, 219)[1]
 TRIGGER = Vector((0.0, P(390, 224)[0], P(390, 224)[1]))
 
 

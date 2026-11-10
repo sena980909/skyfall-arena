@@ -491,7 +491,7 @@ def _icp_rigid(ob, tree, iters=30):
     return err
 
 
-def fit_prop(path, name, group, target, tex_size=2048, material_name='gun_detail', uv_name=None, metal=0.35, rough=0.5, max_tris=0, thin_end=None, drop=0.0):
+def fit_prop(path, name, group, target, tex_size=2048, material_name='gun_detail', uv_name=None, metal=0.35, rough=0.5, max_tris=0, thin_end=None, drop=0.0, split=None):
     """A separately generated model put where a stripped piece was (see swap_in(strip=...)): target = (points, triangles)
     of the removed surface. Fitted by box, then scale and position, then a rigid fine fit; bound to one bone."""
     imgs_before = set(bpy.data.images)
@@ -534,10 +534,83 @@ def fit_prop(path, name, group, target, tex_size=2048, material_name='gun_detail
         # after two seconds of continuous fire (the recoil climb).
         ob.data.transform(Matrix.Translation((0, 0, -drop)))
         ob.data.update()
+    part_idx = []
+    if split:
+        # Give one piece of the model its own bone: split = (bone, f0, f1). The piece is whatever hangs below the body
+        # between the fractions f0..f1 of the model's length, measured from its thick (rear) end: the magazine under the
+        # rifle's body, so that the reload clip pulls out the rifle's real magazine. It is cut loose along a level plane
+        # just under the body (the underside of the rearmost part, which has nothing hanging from it). Both sides of
+        # the cut get a dark plate: the empty well in the body and the top of the magazine.
+        bone2, f0, f1 = split
+        cos = [v.co for v in ob.data.vertices]
+        lo, hi = _bbox(cos)
+        rear_low = abs(thin_end.y - hi.y) < abs(thin_end.y - lo.y)
+        length = hi.y - lo.y
+        along = (lambda c: c.y - lo.y) if rear_low else (lambda c: hi.y - c.y)
+        z_top = min(c.z for c in cos if along(c) < length * 0.06) - 0.004
+        ya, yb = (lo.y + length * f0, lo.y + length * f1) if rear_low else (hi.y - length * f1, hi.y - length * f0)
+        (x0, y0), (x1, y1) = (lo.x - 0.01, ya), (hi.x + 0.01, yb)
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2e-5)
+
+        def inside(c, pad=0.0):
+            return x0 - pad < c.x < x1 + pad and y0 - pad < c.y < y1 + pad
+
+        near = [f for f in bm.faces if inside(f.calc_center_median(), 0.01) and abs(f.calc_center_median().z - z_top) < 0.03]
+        geom = set(near)
+        for f in near:
+            geom.update(f.edges)
+            geom.update(f.verts)
+        bmesh.ops.bisect_plane(bm, geom=list(geom), dist=1e-6, plane_co=Vector((0, 0, z_top)), plane_no=Vector((0, 0, 1)), clear_outer=False, clear_inner=False)
+        piece = {f for f in bm.faces if inside(f.calc_center_median()) and f.calc_center_median().z < z_top}
+        border = [e for e in bm.edges if len(e.link_faces) == 2 and (e.link_faces[0] in piece) != (e.link_faces[1] in piece)]
+        bmesh.ops.split_edges(bm, edges=border)
+        piece = {f for f in bm.faces if inside(f.calc_center_median()) and f.calc_center_median().z < z_top}
+        ring = sorted({(round(v.co.x, 5), round(v.co.y, 5)) for f in piece for v in f.verts if abs(v.co.z - z_top) < 1e-4})
+
+        def half(seq):
+            out = []
+            for q in seq:
+                while len(out) >= 2 and (out[-1][0] - out[-2][0]) * (q[1] - out[-2][1]) - (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0]) <= 0:
+                    out.pop()
+                out.append(q)
+            return out[:-1]
+
+        hull = half(ring) + half(ring[::-1]) if len(ring) >= 3 else []
+        cap = bpy.data.materials.get('detail_cap') or bpy.data.materials.new('detail_cap')
+        ob.data.materials.append(cap)
+        cap_idx = len(ob.data.materials) - 1
+        plate_verts = []
+        if len(hull) >= 3:
+            for up in (True, False):
+                vs = [bm.verts.new(Vector((a_, b_, z_top))) for a_, b_ in hull]
+                f = bm.faces.new(vs)
+                if (f.normal.z > 0) != up:
+                    f.normal_flip()
+                f.material_index = cap_idx
+                if up:
+                    plate_verts = vs
+        bm.verts.index_update()
+        part_idx = sorted({v.index for f in piece for v in f.verts} | {v.index for v in plate_verts})
+        pv = [v.co for f in piece for v in f.verts]
+        fit_prop.piece_box = _bbox(pv)
+        print('FIT_PROP', name, 'split', bone2, 'faces', len(piece), 'plate corners', len(hull), 'y', round(y0, 3), round(y1, 3), 'z_top', round(z_top, 3),
+              'box', [round(x, 3) for x in fit_prop.piece_box[0]], [round(x, 3) for x in fit_prop.piece_box[1]])
+        bm.to_mesh(ob.data)
+        bm.free()
+        ob.data.update()
     ob.vertex_groups.clear()
     ob.vertex_groups.new(name=group).add(range(len(ob.data.vertices)), 1.0, 'REPLACE')
+    if part_idx:
+        ob.vertex_groups[group].remove(part_idx)
+        ob.vertex_groups.new(name=split[0]).add(part_idx, 1.0, 'REPLACE')
     if uv_name and ob.data.uv_layers:
         ob.data.uv_layers[0].name = uv_name
+    if thin_end is not None:
+        cos = [v.co for v in ob.data.vertices]
+        tip = min(cos, key=lambda c: (c - thin_end).length)
+        print('FIT_PROP', name, 'nearest point to the muzzle mm', round((tip - thin_end).length * 1000, 1))
     lo, hi = _bbox([v.co for v in ob.data.vertices])
     print('FIT_PROP', name, 'TRIS', sum(len(q.vertices) - 2 for q in ob.data.polygons), 'fit mm', round(err * 1000, 1), 'DIM', tuple(round(x, 3) for x in (hi - lo)))
     return ob
