@@ -38,7 +38,8 @@ export class Game {
   private readonly sfx = new Sfx();
   private readonly fx: Fx;
   private readonly map = new GreyboxMap();
-  private readonly nav: NavGrid;
+  private nav: NavGrid;
+  private sun!: DirectionalLight;
   private readonly player: Player;
   private readonly bots: Bot[] = [];
   private readonly packs: HealthPack[] = [];
@@ -115,7 +116,8 @@ export class Game {
     sun.shadow.bias = -0.0005;
     hemi.layers.enable(Player.VIEWMODEL_LAYER);
     sun.layers.enable(Player.VIEWMODEL_LAYER);
-    this.scene.add(hemi, sun);
+    this.scene.add(hemi, sun, sun.target);
+    this.sun = sun;
 
     this.scene.add(this.map.group);
     this.nav = new NavGrid(this.map);
@@ -164,6 +166,7 @@ export class Game {
       },
       onVictory: () => this.endGame(true),
       onDefeat: (reason) => this.endGame(false, reason),
+      setGate: (open) => this.setGate(open),
     });
 
     if (mobile) {
@@ -277,8 +280,17 @@ export class Game {
 
   // ---------- 흐름 ----------
 
+  /** 관문을 여닫고 길찾기 격자를 다시 만든다(닫혀 있으면 북쪽 구역은 도달 불가로 빠진다) */
+  private setGate(open: boolean): void {
+    if (this.map.gateOpen === open) return;
+    this.map.setGate(open);
+    this.nav = new NavGrid(this.map);
+    this.ctx.nav = this.nav;
+  }
+
   private startGame(): void {
     this.sfx.init();
+    this.setGate(false);
     for (const b of this.bots) {
       this.scene.remove(b.group, b.debugLine);
     }
@@ -427,6 +439,12 @@ export class Game {
     }
 
     this.touch?.setActive(this.state === 'playing');
+    // 그림자 범위가 플레이어를 따라간다(맵이 길어져 고정 범위로는 다 덮지 못한다). 4m 단위로 옮겨 그림자가 떨리지 않게 한다
+    const sp = this.player.position;
+    const sx = Math.round(sp.x / 4) * 4;
+    const sz = Math.round(sp.z / 4) * 4;
+    this.sun.target.position.set(sx, 0, sz);
+    this.sun.position.set(sx + 42, 40, sz + 16);
     this.fx.camPos.copy(this.camera.position);
     this.fx.update(dt);
     if (this.post) {

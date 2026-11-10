@@ -29,11 +29,15 @@ interface MissionHooks {
   onScore(points: number, text: string): void;
   onVictory(): void;
   onDefeat(reason: string): void;
+  setGate(open: boolean): void;
 }
 
-/** 임무 '탈출'의 수치. 지금 맵(80×60 아레나) 기준 */
-const RELAY_SPOTS = [new Vector3(-32, 0, 18), new Vector3(32, 0, -18), new Vector3(0, 0, -24)];
-const BEACON_POS = new Vector3(0, 4, 0);
+/** 임무 '탈출'의 수치. 남쪽 아레나 → 관문 → 화물 통로 → 북쪽 야드 → (탈출) 다시 남쪽 착륙장 */
+/** 중계기 1·2는 남쪽 아레나, 3은 북쪽 야드. 두 기를 복구하면 관문이 열린다 */
+const RELAY_SPOTS = [new Vector3(-32, 0, 18), new Vector3(32, 0, -18), new Vector3(-25, 0, -110)];
+const GATE_AFTER = 2;
+const BEACON_POS = new Vector3(0, 0, -95);
+const YARD_CHECKPOINT = new Vector3(0, 0, -89);
 const EXTRACT_POS = new Vector3(0, 0, 26);
 const INTERACT_RADIUS = 2.6;
 const RELAY_HOLD = 2.5;
@@ -41,7 +45,7 @@ const BEACON_HOLD = 2.0;
 const DEFEND_SECONDS = 60;
 const DEFEND_WAVE_EVERY = 10;
 const DEFEND_MAX_ALIVE = 4;
-const EXTRACT_SECONDS = 45;
+const EXTRACT_SECONDS = 55;
 const EXTRACT_RADIUS = 3;
 const HEAVY: BotOptions = { hpMult: 1.8, scale: 1.15 };
 const BOSS: BotOptions = { hpMult: 3, scale: 1.35, boss: true };
@@ -52,7 +56,8 @@ const CYAN = 0x4fe3ff;
 
 /**
  * 임무 진행 관리 — 옵치 스토리 임무처럼 목표를 차례로 수행하고 탈출한다.
- *   중계기 3기 복구(F 유지, 손대면 매복) → 중앙 플랫폼에서 탈출선 호출 → 60초 방어 → 추적자(보스) 처치 → 45초 안에 탈출 지점 도달
+ *   아레나의 중계기 2기 복구(F 유지, 손대면 매복) → 관문 개방 → 화물 통로 돌파 → 북쪽 야드의 중계기 복구 → 신호기로 탈출선 호출
+ *   → 60초 방어 → 추적자(보스) 처치 → 55초 안에 통로를 되돌아가 남쪽 착륙장의 탈출 지점 도달
  * 죽으면 마지막으로 달성한 목표 지점(체크포인트)에서 부활하고 진행 상황은 유지된다. 목숨은 게임 전체에서 센다.
  */
 export class Mission {
@@ -70,6 +75,8 @@ export class Mission {
   private readonly deadAt = new Map<Bot, number>();
   private boss: Bot | null = null;
   private lastSpawnIdx = -1;
+  /** 통로 매복을 이미 터뜨렸는가 */
+  private corridorSprung = false;
   private botCounter = 0;
   private readonly checkpoint = new Vector3();
   private readonly tmp = new Vector3();
@@ -181,6 +188,8 @@ export class Mission {
     this.botCounter = 0;
     this.waveCount = 0;
     this.checkpoint.copy(this.ctx.map.playerSpawn);
+    this.hooks.setGate(false);
+    this.corridorSprung = false;
     this.stage = 'relays';
     this.ctx.hud.setBoss(null);
     this.ctx.hud.setRest('');
@@ -192,9 +201,11 @@ export class Mission {
   // ---------- 적 등장 ----------
 
   private pickSpawn(): Vector3 {
-    const spawns = this.ctx.map.botSpawns;
+    // 관문이 닫혀 있으면 아레나 지점만, 열리면 야드 지점도 쓴다. 너무 먼 지점(75m 밖)은 빼서 적이 금방 도착하게 한다
+    const map = this.ctx.map;
+    const spawns = map.gateOpen ? [...map.botSpawns, ...map.yardSpawns] : map.botSpawns;
     const p = this.ctx.player.position;
-    const far = spawns.map((s, i) => ({ s, i, d: s.distanceTo(p) })).filter((c) => c.d >= 22 && c.i !== this.lastSpawnIdx);
+    const far = spawns.map((s, i) => ({ s, i, d: s.distanceTo(p) })).filter((c) => c.d >= 22 && c.d <= 75 && c.i !== this.lastSpawnIdx);
     const pool = far.length ? far : spawns.map((s, i) => ({ s, i, d: 0 }));
     const c = pool[Math.floor(Math.random() * pool.length)];
     this.lastSpawnIdx = c.i;
@@ -312,26 +323,37 @@ export class Mission {
           r.light.emissive.setHex(CYAN);
           this.checkpoint.copy(r.pos);
           this.hooks.onScore(MISSION_SCORE.relay, `중계기 복구 ${this.relaysDone} / ${this.relays.length}`);
+          if (this.relaysDone === GATE_AFTER && !ctx.map.gateOpen) {
+            this.hooks.setGate(true);
+            hud.killFeed('북쪽 관문 개방 — 화물 통로를 지나 마지막 중계기로', 'hs');
+          }
           ctx.sfx.waveClear();
         }
         markPos = r.pos;
         markLabel = '중계기';
       }
-      hud.setObjective(`목표: 중계기 복구 ${this.relaysDone} / ${this.relays.length}`, `남은 적 ${this.aliveBots}`);
+      // 통로에 들어서면 매복이 터진다(한 번)
+      if (ctx.map.gateOpen && !this.corridorSprung && ctx.player.position.z < -36) {
+        this.corridorSprung = true;
+        this.queue(3, 0.2);
+        hud.killFeed('통로 매복! 앞뒤에서 온다', 'death');
+      }
+      hud.setObjective(`목표: 중계기 복구 ${this.relaysDone} / ${this.relays.length}`,
+        `${ctx.map.gateOpen ? '북쪽 야드 · ' : ''}남은 적 ${this.aliveBots}`);
       hud.setRest('');
       if (this.relaysDone === this.relays.length) {
         this.stage = 'beacon';
-        hud.killFeed('통신 복구 — 중앙 플랫폼에서 탈출선을 호출하라', 'hs');
+        hud.killFeed('통신 복구 — 야드 중앙의 신호기로 탈출선을 호출하라', 'hs');
       }
     } else if (this.stage === 'beacon') {
       const res = this.hold(BEACON_POS, this.beaconProgress, BEACON_HOLD, dt, '탈출선 호출');
       this.beaconProgress = res.progress;
       markPos = BEACON_POS;
       markLabel = '신호기';
-      hud.setObjective('목표: 탈출선 호출', `중앙 플랫폼 위 신호기 · 남은 적 ${this.aliveBots}`);
+      hud.setObjective('목표: 탈출선 호출', `야드 중앙 신호기 · 남은 적 ${this.aliveBots}`);
       if (this.beaconProgress >= 1) {
         this.beaconLight?.emissive.setHex(CYAN);
-        this.checkpoint.set(0, 0, 9.5);
+        this.checkpoint.copy(YARD_CHECKPOINT);
         this.stage = 'defend';
         this.timerEnd = now + DEFEND_SECONDS;
         this.nextWaveAt = now + 1;
@@ -369,16 +391,16 @@ export class Mission {
           this.stage = 'extract';
           this.timerEnd = now + EXTRACT_SECONDS;
           this.zone.visible = true;
-          this.checkpoint.set(0, 0, 9.5);
+          this.checkpoint.copy(YARD_CHECKPOINT);
           this.queue(2, 1.0);
-          hud.killFeed(`탈출선 도착 — ${EXTRACT_SECONDS}초 안에 착륙장으로`, 'hs');
+          hud.killFeed(`탈출선 도착 — ${EXTRACT_SECONDS}초 안에 통로를 지나 남쪽 착륙장으로`, 'hs');
           ctx.sfx.waveClear();
         }
       }
     } else if (this.stage === 'extract') {
       markPos = EXTRACT_POS;
       markLabel = '탈출 지점';
-      hud.setObjective('목표: 탈출 지점 도달', `착륙장 · 남은 적 ${this.aliveBots}`);
+      hud.setObjective('목표: 탈출 지점 도달', `남쪽 착륙장 · 남은 적 ${this.aliveBots}`);
       hud.setRest(`탈출선 출발까지 ${Math.ceil(this.timeLeft)}초`);
       const p = ctx.player;
       const d = this.tmp.copy(p.position).sub(EXTRACT_POS);

@@ -17,7 +17,8 @@ export class GreyboxMap {
   readonly colliders: Box3[] = [];
   /** 외형을 키트 모듈로 바꿀 상자 목록 (충돌·탄 판정은 상자 그대로) */
   private readonly kitTags: KitTag[] = [];
-  readonly bounds = new Box3(new Vector3(-40, -1, -30), new Vector3(40, 10, 30));
+  /** 전체 범위: 남쪽 아레나(z -30..30) + 화물 통로(z -70..-30) + 북쪽 야드(z -121..-70) */
+  readonly bounds = new Box3(new Vector3(-40, -1, -122), new Vector3(40, 10, 30));
   readonly playerSpawn = new Vector3(0, 0, 26);
   /** 힐팩 위치: [x, z, big] — GDD 6장: 대 ×2, 소 ×4 */
   readonly healthPackSpots: { pos: Vector3; big: boolean }[] = [
@@ -27,6 +28,10 @@ export class GreyboxMap {
     { pos: new Vector3(30, 0, -16), big: false },
     { pos: new Vector3(-30, 0, 16), big: false },
     { pos: new Vector3(30, 0, 16), big: false },
+    { pos: new Vector3(6.5, 0, -64), big: false },
+    { pos: new Vector3(0, 0, -113), big: true },
+    { pos: new Vector3(-26, 0, -88), big: false },
+    { pos: new Vector3(26, 0, -102), big: false },
   ];
   readonly botSpawns: Vector3[] = [
     new Vector3(-34, 0, -24),
@@ -36,6 +41,15 @@ export class GreyboxMap {
     new Vector3(34, 0, 8),
     new Vector3(-18, 0, -26),
   ];
+  /** 북쪽 야드의 적 등장 지점 (임무에서 관문이 열린 뒤에만 쓴다) */
+  readonly yardSpawns: Vector3[] = [
+    new Vector3(-26, 0, -75), new Vector3(26, 0, -75), new Vector3(-26, 0, -117), new Vector3(26, 0, -117), new Vector3(0, 0, -118),
+  ];
+  /** 아레나와 통로 사이의 관문. 닫혀 있으면 충돌·탄 판정에 들어가고, 열리면 빠진다 */
+  gateOpen = false;
+  private gateMesh!: Mesh;
+  private gateBox!: Box3;
+  private readonly extraFloors: { mat: MeshStandardMaterial; sx: number; sz: number }[] = [];
 
   private readonly matFloor = new MeshStandardMaterial({ color: 0x3a4250, roughness: 0.95 });
   private readonly matWall = new MeshStandardMaterial({ color: 0x4a5566, roughness: 0.9 });
@@ -75,7 +89,9 @@ export class GreyboxMap {
     }
 
     // 외벽 (높이 6)
-    this.addBox(0, 0, -30.5, 82, 6, 1, this.matWall, true, 'wall');
+    // 북쪽 벽은 가운데 8m를 관문으로 비운다
+    this.addBox(-22.5, 0, -30.5, 37, 6, 1, this.matWall, true, 'wall');
+    this.addBox(22.5, 0, -30.5, 37, 6, 1, this.matWall, true, 'wall');
     this.addBox(0, 0, 30.5, 82, 6, 1, this.matWall, true, 'wall');
     this.addBox(-40.5, 0, 0, 1, 6, 62, this.matWall, true, 'wall');
     this.addBox(40.5, 0, 0, 1, 6, 62, this.matWall, true, 'wall');
@@ -124,10 +140,79 @@ export class GreyboxMap {
     this.addBox(-19.5, 0, 14.5, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
     this.addBox(19.5, 0, -14.5, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
 
+    this.buildNorth();
+
     // 스폰 마커 (비충돌, 시각 참고용)
     const spawnMat = new MeshStandardMaterial({ color: new Color(0x2f80ff), emissive: 0x1a3f80, roughness: 0.5 });
     const pm = this.addBox(this.playerSpawn.x, 0, this.playerSpawn.z, 2.4, 0.05, 2.4, spawnMat, false);
     pm.castShadow = false;
+  }
+
+  /** 바닥 추가(충돌 포함). 텍스처 반복을 크기에 맞추기 위해 재질을 따로 둔다 */
+  private addFloor(cx: number, cz: number, sx: number, sz: number): void {
+    const mat = this.matFloor.clone();
+    const m = this.addBox(cx, -0.5, cz, sx, 0.5, sz, mat);
+    m.castShadow = false;
+    this.extraFloors.push({ mat, sx, sz });
+  }
+
+  /** 임무용 확장 구역: 관문 → 화물 통로(18×40m) → 북쪽 야드(60×50m) */
+  private buildNorth(): void {
+    // 관문 (닫힌 상태로 시작)
+    const gateMat = new MeshStandardMaterial({ color: 0x2a3344, roughness: 0.6, metalness: 0.5 });
+    this.gateMesh = this.addBox(0, 0, -30.5, 8, 6, 1, gateMat, true);
+    this.gateBox = this.colliders[this.colliders.length - 1];
+    const stripMat = new MeshStandardMaterial({ color: 0x401008, emissive: 0xff4020, emissiveIntensity: 2.2 });
+    for (const y of [-1.2, 0.2, 1.6]) {
+      const strip = new Mesh(new BoxGeometry(6.6, 0.22, 1.08), stripMat);
+      strip.position.y = y;
+      this.gateMesh.add(strip);
+    }
+    // 화물 통로
+    this.addFloor(0, -50.5, 20, 40);
+    this.addBox(-9.5, 0, -50.5, 1, 6, 39, this.matWall, true, 'wall');
+    this.addBox(9.5, 0, -50.5, 1, 6, 39, this.matWall, true, 'wall');
+    this.addBox(-3.5, 0, -39, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
+    this.addBox(4, 0, -47, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
+    this.addBox(-6.2, 0, -52, 2.5, 2.5, 6, this.matContainer, true, 'container');
+    this.addBox(-3, 0, -61, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
+    for (const [x, z] of [[6.5, -41], [6.5, -56], [-6.5, -44], [3, -66]] as [number, number][]) this.addBox(x, 0, z, 2, 1.0, 2, this.matCrate, true, 'crate');
+    // 북쪽 야드
+    this.addFloor(0, -95.5, 62, 52);
+    this.addBox(-19.75, 0, -70.5, 21.5, 6, 1, this.matWall, true, 'wall');
+    this.addBox(19.75, 0, -70.5, 21.5, 6, 1, this.matWall, true, 'wall');
+    this.addBox(-30.5, 0, -95.5, 1, 6, 51, this.matWall, true, 'wall');
+    this.addBox(30.5, 0, -95.5, 1, 6, 51, this.matWall, true, 'wall');
+    this.addBox(0, 0, -121.5, 62, 6, 1, this.matWall, true, 'wall');
+    this.addBox(-16, 0, -82, 6, 2.5, 2.5, this.matContainer, true, 'container');
+    this.addBox(16, 0, -108, 6, 2.5, 2.5, this.matContainer, true, 'container');
+    this.addBox(18, 0, -84, 2.5, 2.5, 6, this.matContainer, true, 'container');
+    this.addBox(-18, 0, -104, 2.5, 2.5, 6, this.matContainer, true, 'container');
+    this.addBox(0, 0, -86, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
+    this.addBox(0, 0, -103, 6, 1.1, 0.6, this.matCrate, true, 'barrier');
+    this.addBox(-10, 0, -95, 0.6, 1.1, 5, this.matCrate, true, 'barrier');
+    this.addBox(10, 0, -95, 0.6, 1.1, 5, this.matCrate, true, 'barrier');
+    for (const [x, z] of [[-6, -91], [7, -99], [-13, -97], [13, -91], [0, -108], [-24, -93], [24, -97], [8, -78], [-8, -114]] as [number, number][]) {
+      this.addBox(x, 0, z, 2, 1.0, 2, this.matCrate, true, 'crate');
+    }
+    this.addBox(-22, 0, -78, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
+    this.addBox(22, 0, -114, 2, 2.0, 2, this.matCrate, true, 'crate_tall');
+  }
+
+  /** 관문 여닫기. 바꾼 뒤에는 길찾기 격자를 다시 만들어야 한다(Game.setGate) */
+  setGate(open: boolean): void {
+    if (open === this.gateOpen) return;
+    this.gateOpen = open;
+    this.gateMesh.visible = !open;
+    const ci = this.colliders.indexOf(this.gateBox);
+    const mi = this.meshes.indexOf(this.gateMesh);
+    if (open) {
+      if (ci >= 0) this.colliders.splice(ci, 1);
+      if (mi >= 0) this.meshes.splice(mi, 1);
+    } else {
+      if (ci < 0) this.colliders.push(this.gateBox);
+      if (mi < 0) this.meshes.push(this.gateMesh);
+    }
   }
 
   /**
@@ -205,7 +290,7 @@ export class GreyboxMap {
     }
     // 배경: 경기장 밖 타워(충돌·판정 없음)와 벽 위 조명
     const towers: [number, number, number, number][] = [
-      [-70, -20, 1.4, 1.2], [-58, -50, 1.0, 0.8], [-25, -62, 1.2, 1.4], [5, -70, 1.6, 1.0], [35, -60, 1.0, 1.5], [62, -45, 1.3, 0.9],
+      [-70, -20, 1.4, 1.2], [-60, -55, 1.0, 0.8], [-58, -98, 1.2, 1.4], [-20, -150, 1.6, 1.0], [25, -146, 1.0, 1.5], [60, -105, 1.2, 1.1], [62, -52, 1.3, 0.9],
       [72, -10, 1.0, 1.3], [66, 25, 1.5, 1.0], [45, 58, 1.0, 1.2], [10, 66, 1.3, 0.8], [-22, 62, 1.0, 1.4], [-55, 48, 1.4, 1.0], [-72, 15, 1.0, 0.9],
     ];
     for (const [x, z, sxz, sy] of towers) {
@@ -230,6 +315,15 @@ export class GreyboxMap {
       this.matFloor.color.setHex(0xffffff);
       this.matFloor.roughness = 0.8;
       this.matFloor.needsUpdate = true;
+      for (const f of this.extraFloors) {
+        const tex = floor.clone();
+        tex.repeat.set((floor.repeat.x * f.sx) / 80, (floor.repeat.y * f.sz) / 60);
+        tex.needsUpdate = true;
+        f.mat.map = tex;
+        f.mat.color.setHex(0xffffff);
+        f.mat.roughness = 0.8;
+        f.mat.needsUpdate = true;
+      }
       // 플랫폼도 같은 플레이트 텍스처 (반복 축소)
       const platTex = floor.clone();
       platTex.repeat.set(3, 3);
