@@ -505,13 +505,34 @@ HOLD_MAG = A.hand_frame(R.MAG_BOTTOM + Vector((-0.004, 0.0, -0.02)), (0.9, 0.3, 
 AWAY_L = A.hand_frame(POUCH + Vector((0.0, 0.03, 0.04)), (0.15, 0.25, -0.95), (-0.9, 0.3, 0.0))
 
 
-def reload_gun(c):
+# 1인칭 재장전 때의 총 자세: (오른쪽, 앞, 위) 이동 m + (Z 왼쪽으로 돌림, X 총구 들기, Y 옆으로 눕힘) rad.
+# 총을 높이 들면 조준점을 가린다(전에는 1.4초 중 1.05초 동안 화면 한가운데를 덮었다). 오른쪽 아래에 둔 채 66° 눕혀
+# 탄창 구멍이 왼쪽 아래를 보게 하면, 빈 탄창이 빠지고 새 탄창이 들어오는 모습이 화면 아래쪽에서 보인다.
+# 맞출 때는 환경 변수로 바꿔 가며 미리보기만 뽑는다: FP_RELOAD="dx,dy,dz,rz,rx,ry" PREVIEW_TAG=_a ... fp preview_only
+FP_RELOAD = (0.06, 0.03, 0.075, 0.14, 0.16, 1.15)
+if 'FP_RELOAD' in os.environ:
+    FP_RELOAD = tuple(float(v) for v in os.environ['FP_RELOAD'].split(','))
+PREVIEW_TAG = os.environ.get('PREVIEW_TAG', '')
+# 총이 한 자세로 굳어 있지 않게 하는 작은 움직임(시작, 정점, 끝): 빈 탄창을 털어 내는 손목 꺾기, 새 탄창을 밀어 넣을 때 들썩임,
+# 그 사이 왼손이 탄창을 가지러 간 동안 천천히 내려앉기
+FP_FLICK = (0.10, 0.19, 0.36)
+FP_SEAT = (0.89, 0.95, 1.10)
+FP_SETTLE = (0.30, 0.86)
+
+
+def reload_gun(c, t=None):
     """기울임 c(0..1)일 때의 총 행렬. 3인칭에서는 총을 가슴 앞에 둔 채 살짝 숙이고 옆으로 눕힌다(1인칭처럼 들어 올리면 얼굴을 가린다)."""
     if MODE == 'fp':
-        # 1인칭: 총구를 왼쪽 위로 들고 윗면을 오른쪽으로 굴려 왼쪽 면과 탄창 구멍이 카메라를 향하게 한다
-        # (총을 화면 가운데까지 올리면 시야를 너무 가려서 오른쪽 아래에 둔 채 기울인다)
-        return (Matrix.Translation(GUN_POS + Vector((-0.075, 0.05, 0.125)) * c) @ Matrix.Rotation(0.22 * c, 4, 'Z')
-                @ Matrix.Rotation(0.38 * c, 4, 'X') @ Matrix.Rotation(0.7 * c, 4, 'Y'))
+        # 1인칭: 윗면을 오른쪽으로 굴려 왼쪽 면과 탄창 구멍이 카메라를 향하게 한다. 수치와 이유는 FP_RELOAD 주석
+        dx, dy, dz, rz, rx, ry = FP_RELOAD
+        flick = seat = settle = 0.0
+        if t is not None:
+            settle = TL.ramp(t, *FP_SETTLE) * (1 - TL.ramp(t, *TL.CANT_OUT))
+            flick = TL.ramp(t, *FP_FLICK[:2]) * (1 - TL.ramp(t, *FP_FLICK[1:]))
+            seat = TL.ramp(t, *FP_SEAT[:2]) * (1 - TL.ramp(t, *FP_SEAT[1:]))
+        return (Matrix.Translation(GUN_POS + Vector((dx, dy, dz)) * c + Vector((0, 0, -0.014 * flick + 0.016 * seat - 0.008 * settle)))
+                @ Matrix.Rotation(rz * c, 4, 'Z') @ Matrix.Rotation(rx * c + 0.045 * seat, 4, 'X')
+                @ Matrix.Rotation(ry * c + 0.10 * flick - 0.07 * settle, 4, 'Y'))
     return (Matrix.Translation(GUN_POS + Vector((-0.03, -0.03, -0.03)) * c) @ Matrix.Rotation(0.18 * c, 4, 'Z')
             @ Matrix.Rotation(-0.12 * c, 4, 'X') @ Matrix.Rotation(0.5 * c, 4, 'Y'))
 
@@ -520,7 +541,7 @@ def pose_reload(t):
     """몸은 idle 첫 프레임에 두고 총·탄창·양팔만 움직인다. 구간은 1인칭과 같은 시간표(reload_timeline)."""
     X = pose('idle', 0.0)
     Xa = X['armsgun']
-    D = reload_gun(TL.cant(t))
+    D = reload_gun(TL.cant(t), t)
     D1 = reload_gun(1.0)
     # 빈 탄창은 아래로 떨어지고, 새 탄창은 주머니에서 출발한다 (총 로컬 좌표로 환산)
     out_end = tuple(D1.to_3x3().inverted() @ Vector((0.0, 0.0, -1.05)))
@@ -606,11 +627,11 @@ def shot(name, clip, t, loc, look=(0, 0, 0.95)):
 if ARMS_ONLY:
     # 게임에서는 리그를 앞으로 0.19m·위로 0.125m 옮겨 붙인다(Player.FP_DETAIL_BASE) → 카메라를 그만큼 뒤·아래에 둔 것과 같다
     FP_CAM = (EYE.x, EYE.y - 0.19, EYE.z - 0.125)
-    for tt in (0.0, 0.2, 0.35, 0.5, 0.7, 0.9, 1.05, 1.2):
+    for tt in (0.0, 0.15, 0.22, 0.3, 0.42, 0.6, 0.72, 0.82, 0.92, 1.0, 1.1, 1.22):
         LAST_Q.clear()
         apply_pose(pose_any('reload', tt))
         bpy.context.view_layer.update()
-        L.render(os.path.join(PREVIEW, f'fpd_reload_{int(tt * 100):03d}.png'), loc=FP_CAM, look_at=(FP_CAM[0], FP_CAM[1] + 5, FP_CAM[2]), fov_deg=56)
+        L.render(os.path.join(PREVIEW, f'fpd_reload{PREVIEW_TAG}_{int(tt * 100):03d}.png'), loc=FP_CAM, look_at=(FP_CAM[0], FP_CAM[1] + 5, FP_CAM[2]), fov_deg=56)
 else:
     shot(f'{PFX}_idle_front', 'idle', 0.0, (1.6, 3.2, 1.5))
     shot(f'{PFX}_idle_side', 'idle', 0.0, (3.8, 0.2, 1.1))
