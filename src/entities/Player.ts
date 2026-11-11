@@ -406,8 +406,8 @@ export class Player implements Hittable, Healable {
   }
 
   /** 3인칭 몸 모델 생성. 돌려준 그룹을 씬에 넣어야 한다 */
-  applyBody(source: Group, clips: AnimationClip[]): Group {
-    this.body = new PlayerBody(source, clips);
+  applyBody(source: Group, clips: Record<string, AnimationClip>, rifle: Object3D | null): Group {
+    this.body = new PlayerBody(source, clips, rifle);
     return this.body.group;
   }
 

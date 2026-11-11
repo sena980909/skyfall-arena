@@ -45,8 +45,8 @@ export interface LoadedAssets {
   fpDirect: FpDirectParts | null;
   /** 힉스필드에서 받은 이펙트 모델(총구 화염, 탄, 피격 섬광) */
   fxModels: FxModels;
-  /** 주인공 3인칭 몸: 적 봇과 같은 리그에 팔 관절·재장전 클립이 더해진 파란색 상세 모델 */
-  playerRig: { scene: Group; clips: AnimationClip[] } | null;
+  /** Player third-person body: Higgsfield model, rig and clips as generated (entities/PlayerBody.ts) */
+  player: CharacterAsset | null;
   /** Blender로 직접 만든 적 봇 리그(이동 클립 포함). 있으면 raven·pulse_rifle 대신 쓴다 */
   botRig: { scene: Group; clips: AnimationClip[] } | null;
   /** Blender로 만든 맵 모듈 키트(컨테이너·크레이트·플랫폼·외벽 등). 있으면 그레이박스 외형을 대체한다 */
@@ -66,6 +66,14 @@ const BASE = import.meta.env.BASE_URL.replace(/\/$/, '') + '/assets/';
 export const ASSET_VER = '?v=' + __BUILD__.replace(/\D/g, '');
 
 /** 레이븐 애니메이션 클립 파일 (M3: 힉스필드 리깅 결과) */
+/** Player body clips (Higgsfield 3D Rigging on the player model) */
+export const PLAYER_CLIPS: Record<string, string> = {
+  idle: 'models/player_idle.glb',
+  run: 'models/player_run.glb',
+  crouch: 'models/player_crouch.glb',
+  death: 'models/player_death.glb',
+};
+
 export const RAVEN_CLIPS: Record<string, string> = {
   idle: 'models/enemy_idle.glb',
   run: 'models/enemy_run.glb',
@@ -212,9 +220,8 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const fxGltfs = await Promise.all(['fx_flash', 'fx_bolt', 'fx_impact'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
   const fxModels: FxModels = { flash: fxGltfs[0]?.scene ?? null, bolt: fxGltfs[1]?.scene ?? null, impact: fxGltfs[2]?.scene ?? null };
   const fpDirect = fpParts[0] && fpParts[1] && fpParts[2] ? { gun: fpParts[0].scene, mag: fpParts[1].scene, arm: fpParts[2].scene } : null;
-  const [fpDetailGltf, playerRigGltf, botRigGltf, ...kitGltfs] = await Promise.all([
+  const [fpDetailGltf, botRigGltf, ...kitGltfs] = await Promise.all([
     fpDirect ? Promise.resolve(null) : loadGltf(gl, BASE + 'models/fp_detail.glb'),
-    loadGltf(gl, BASE + 'models/player_rig.glb'),
     // 적의 몸은 힉스필드 리깅 모델(enemy.glb + 동작 클립)을 쓴다. Blender 리그(bot_rig.glb)는 없앤다
     Promise.resolve(null as GLTF | null),
     // 맵 소품: 힉스필드에서 받은 모델을 하나씩 그대로 불러 모듈 묶음을 만든다(world/KitDirect.ts)
@@ -265,7 +272,23 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
   const botRig = botRigGltf ? { scene: botRigGltf.scene, clips: botRigGltf.animations } : null;
   const fpDetail = fpDetailGltf ? { scene: fpDetailGltf.scene, clips: fpDetailGltf.animations } : null;
-  const playerRig = playerRigGltf ? { scene: playerRigGltf.scene, clips: playerRigGltf.animations } : null;
+  const [playerBase, ...playerClipGltfs] = await Promise.all([
+    loadGltf(gl, BASE + 'models/player.glb'),
+    ...Object.values(PLAYER_CLIPS).map((f) => loadGltf(gl, BASE + f)),
+  ]);
+  let player: CharacterAsset | null = null;
+  if (playerBase) {
+    const clips: Record<string, AnimationClip> = {};
+    Object.keys(PLAYER_CLIPS).forEach((name, i) => {
+      const g = playerClipGltfs[i];
+      if (!g || !g.animations.length) return;
+      const c = g.animations[0].clone();
+      c.name = name;
+      stripRootMotion(c);
+      clips[name] = c;
+    });
+    player = { scene: playerBase.scene, clips };
+  }
   const kitModels = Object.fromEntries(KIT_FILES.map((n, i) => [n, kitGltfs[i]?.scene ?? null]));
   const mapKit = kitGltfs.some((k) => k) ? buildKit(kitModels) : null;
   const [dPanel, dPanelDark, dSuit, dWorn] = await Promise.all([
@@ -282,6 +305,6 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
     t.needsUpdate = true;
   }
   const detail: DetailTextures = { panel: dPanel, panelDark: dPanelDark, suit: dSuit, worn: dWorn };
-  for (const root of [fpRigGltf?.scene, botRigGltf?.scene, playerRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
-  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, fpDirect, fxModels, playerRig, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
+  for (const root of [fpRigGltf?.scene, botRigGltf?.scene, mapKit]) if (root) applyDetailTextures(root, detail);
+  return { sky, floor, floorN, deck, deckN, container, raven, rifle, fpArms, fpRig, fpDetail, fpDirect, fxModels, player, botRig, mapKit, detail, vfx: { muzzle, bolt, impact, flashBurst } };
 }

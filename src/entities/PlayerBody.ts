@@ -1,30 +1,29 @@
 import {
-  AnimationAction, AnimationClip, AnimationMixer, DoubleSide, Group, LoopOnce, Mesh, MeshStandardMaterial, Object3D, Quaternion, Vector3,
+  AnimationAction, AnimationClip, AnimationMixer, Box3, Euler, Group, LoopOnce, Matrix4, Mesh, MeshStandardMaterial, Object3D, Quaternion,
+  SkinnedMesh, Vector3,
 } from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import {
-  GAIT_ALL, GAIT_FWD_BACK, gaitResidual, legsYawFor, mirroredStrafePhase, neighborDir, pickGaitDir, solveGaitBlend, startTurnStep, turnStepYaw,
-  type GaitDir, type TurnStep,
-} from './GaitDir';
+import { buildAlignedGun } from '@/render/GunAlign';
+import { GAIT_FWD_BACK, legsYawFor, type GaitDir } from './GaitDir';
 
-/** 제자리 돌기: 이 각(라디안)을 넘으면 발을 떼어 돈다 / 90° 한 걸음의 길이(초). 주인공은 마우스로 빨리 돌아서 봇보다 짧게 잡는다 */
-const TURN_START = 0.6;
-const TURN_DUR = 0.3;
-
-/** 보행 클립의 접지 발 속도(m/s). tools/blender/build_bot_rig.py의 GAITS와 같아야 발이 미끄러지지 않는다 */
-const CLIP_SPEED: Record<string, number> = {
-  walk: 1.6, jog: 2.8, run: 5.5, sprint: 8.25, back: 5.5, strafeL: 2.8, strafeR: 2.8, strafeFastL: 5.5, strafeFastR: 5.5,
-  crouchWalk: 2.75, crouchBack: 2.75, crouchStrafeL: 2.75, crouchStrafeR: 2.75,
-};
-/** 서 있는 자세 클립(걸음이 아닌 것) */
-const isStill = (name: string): boolean => name === 'idle' || name === 'crouch';
-/** 허리 비틀림 한계(라디안). 넘으면 다리가 조준 쪽으로 끌려온다. 옆걸음 때 몸이 과하게 꼬이지 않게 봇(1.9)보다 작게 둔다 */
-const MAX_TWIST = 1.57;
-/** 재장전 클립이 움직이는 본(팔·총·탄창). 보행 클립에서는 이 트랙을 빼고, 재장전 클립에는 이 트랙만 남긴다 */
-const ARM_TRACK = /^(gun|mag|muzzle|upper[LR]|fore[LR]|hand[LR])\./;
+/** 게임 안의 몸 키(눈높이 1.6m). 힉스필드 리그와 클립은 키 1.8m로 받았다 */
+const BODY_HEIGHT = 1.71;
+const K = BODY_HEIGHT / 1.8;
+/** 클립마다 디딘 발이 바닥을 미는 속도(m/s, 키 1.8m 기준). 클립에서 직접 잰 값 */
+export const PLAYER_CLIP_SPEED: Record<string, number> = { run: 6.0, crouch: 1.63 };
+/** 허리 비틀림 한계(라디안). 넘으면 다리가 조준 쪽으로 끌려온다 */
+const MAX_TWIST = 1.6;
+/** 총 길이와, 손잡이가 홀더 원점에 오도록 총을 앞으로 민 거리(적과 같은 값) */
+const RIFLE_LENGTH = 0.78 * K;
+const GRIP_SHIFT = 0.16 * K;
+/** 총 위의 손 자리(홀더 기준, 총열은 -Z) */
+const GRIP = new Vector3(0, -0.03, 0.04).multiplyScalar(K);
+const GUARD = new Vector3(0, -0.03, -0.3).multiplyScalar(K);
+const MAG = new Vector3(0, -0.13, -0.07).multiplyScalar(K);
+const MAG_OUT = new Vector3(-0.06, -0.38, -0.02).multiplyScalar(K);
+const CROUCH_STRAIGHTEN = 0.4;
 const UP = new Vector3(0, 1, 0);
-/** 몸 모델(키 1.8m)을 플레이어 눈높이 1.6m에 맞추는 배율 */
-const BODY_SCALE = 0.95;
+const ZERO = new Vector3(0, 0, 0);
 
 export interface PlayerBodyState {
   pos: Vector3;
@@ -39,137 +38,251 @@ export interface PlayerBodyState {
   kick: number;
   /** 질주 중(총을 내리고 달린다) */
   sprint: boolean;
-  /** 앉아 있다(앉은 자세·앉아 걷기 클립을 쓴다) */
+  /** 앉아 있다 */
   crouch: boolean;
 }
+
+interface Arm { upper: Object3D; fore: Object3D; hand: Object3D }
 
 function wrap(a: number): number {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
 }
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+const smooth = (t: number): number => {
+  const k = clamp(t, 0, 1);
+  return k * k * (3 - 2 * k);
+};
+
+/** 생성 모델에는 발광 그림이 없다: 겉그림의 청록 불빛(바이저·띠)만 빛나게 한다 */
+function addCyanGlow(mat: MeshStandardMaterial, strength: number): void {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uGlow = { value: strength };
+    sh.fragmentShader = sh.fragmentShader
+      .replace('uniform float opacity;', 'uniform float opacity;\nuniform float uGlow;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        #ifdef USE_MAP
+        {
+          vec3 gc = sampledDiffuseColor.rgb;
+          float gcy = min(gc.g, gc.b);
+          totalEmissiveRadiance += gc * smoothstep(0.5, 0.75, gcy) * smoothstep(0.12, 0.3, gcy - gc.r) * uGlow;
+        }
+        #endif`);
+  };
+  mat.customProgramCacheKey = () => `cyanGlow${strength}`;
+}
 
 /**
- * 주인공의 3인칭 몸. 적 봇과 같은 리그·보행 클립에 팔 관절과 재장전 클립이 더해진 player_rig.glb를 쓴다.
- * 다리는 이동 방향을, 상체는 조준 방향을 향하고(허리 비틀림), 팔·총은 조준 피치만큼 어깨 축으로 돈다.
- * 재장전은 무기의 진행률에 클립 시간을 직접 맞춘다(1인칭·효과음과 같은 시간표).
+ * 주인공의 3인칭 몸. 모델·뼈대·동작 모두 힉스필드에서 받은 그대로 쓴다(이미지→3D + 3D Rigging).
+ * 코드는 어떤 동작을 틀지 고르고, 동작이 알 수 없는 것만 더한다: 허리는 조준 쪽으로 돌고, 총은 카메라가 보는 곳을 향하고,
+ * 두 손은 총으로 간다(2본 IK). 재장전은 무기의 진행률을 그대로 따른다(1인칭·효과음과 같은 시간표).
  */
 export class PlayerBody {
   readonly group = new Group();
   private readonly mixer: AnimationMixer;
   private readonly actions: Record<string, AnimationAction> = {};
   private readonly weights: Record<string, number> = {};
-  private reloadAction: AnimationAction | null = null;
-  private reloadBlend = 0;
-  private readonly torso: Object3D | null;
-  private readonly hips: Object3D | null;
-  private readonly arms: Object3D | null;
-  private readonly muzzle: Object3D | null;
-  private readonly clean: Quaternion[] = [];
+  private readonly spine: Object3D[] = [];
+  private readonly neck: Object3D | null;
+  private readonly armL: Arm | null;
+  private readonly armR: Arm | null;
   private readonly poseBones: Object3D[] = [];
+  private readonly clean: Quaternion[] = [];
+  private holder: Group | null = null;
+  private muzzle: Object3D | null = null;
   private legsYaw = 0;
-  /** 제자리 돌기 한 걸음(GaitDir.TurnStep), 비틀린 채 서 있은 시간, 조준이 도는 속도(rad/s) */
-  private turnStep: TurnStep | null = null;
+  private turning = false;
   private turnWait = 0;
-  private aimRate = 0;
-  private lastAim = 0;
-  /** 걸음 방향(전진·뒷걸음·좌우 옆걸음)과 최소 유지 시간 */
   private dir: GaitDir = 'fwd';
   private dirHold = 0;
-  /** 속도가 잠깐 0을 지나도(좌우 방향 전환) 걷는 중으로 치는 시간 */
   private stillT = 1;
   private moveYaw = 0;
-  private gait = 'idle';
-  private gait2 = '';
-  private gaitSpeed = 0;
   private airTime = 0;
   private sprintBlend = 0;
+  private reloadBlend = 0;
+  private reloadT = 0;
   private dying = false;
+  /** 앉아 걷기 클립에서 두 발이 모두 바닥에 있는 시각: 앉아서 가만히 있을 때의 자세 */
+  private crouchRest = 0;
   private readonly vel = new Vector3();
   private readonly raw = new Vector3();
   private readonly lastPos = new Vector3();
   private hasLast = false;
-  private deathT = -1;
   private readonly q = new Quaternion();
+  private readonly q2 = new Quaternion();
   private readonly qp = new Quaternion();
+  private readonly e = new Euler();
+  private readonly m = new Matrix4();
   private readonly axis = new Vector3();
+  private readonly v = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
 
-  constructor(source: Group, clips: AnimationClip[]) {
+  constructor(source: Group, clips: Record<string, AnimationClip>, rifleSrc: Object3D | null) {
     const model = skeletonClone(source) as Group;
-    model.rotation.y = Math.PI; // glTF 정면(-Z)을 그룹의 +Z 정면으로
-    model.scale.setScalar(BODY_SCALE);
-    const cache = new Map<unknown, MeshStandardMaterial>();
+    // 스킨드 메시는 본이 적용된 실제 정점으로 크기를 재야 한다
+    const measure = (): Box3 => {
+      model.updateMatrixWorld(true);
+      model.traverse((o) => {
+        const sm = o as SkinnedMesh;
+        if (sm.isSkinnedMesh) sm.skeleton.update();
+      });
+      return new Box3().setFromObject(model, true);
+    };
+    let box = measure();
+    model.scale.setScalar(BODY_HEIGHT / (box.getSize(new Vector3()).y || 1));
+    box = measure();
+    const c = box.getCenter(new Vector3());
+    model.position.set(-c.x, -box.min.y, -c.z);
     model.traverse((o) => {
-      const m = o as Mesh;
-      if (!m.isMesh) return;
-      const mats = (Array.isArray(m.material) ? m.material : [m.material]).map((orig) => {
-        let mm = cache.get(orig);
-        if (!mm) {
-          mm = (orig as MeshStandardMaterial).clone();
-          mm.envMapIntensity = 0.4;
-          // The mesh is cut where the arms separate from the body; draw inner faces too so the cuts do not read as holes.
-          mm.side = DoubleSide;
-          if (mm.name === 'bot_visor') {
-            mm.emissive.setHex(0x7fe0ff);
-            mm.emissiveIntensity = 0.9;
-          }
-          cache.set(orig, mm);
-        }
+      const mesh = o as Mesh;
+      if (!mesh.isMesh) return;
+      const mats = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).map((orig) => {
+        const mm = (orig as MeshStandardMaterial).clone();
+        // 생성된 거칠기·금속 지도는 거울에 가까워 쓰지 않는다(적과 같다)
+        mm.metalnessMap = null;
+        mm.roughnessMap = null;
+        mm.aoMap = null;
+        mm.metalness = 0.3;
+        mm.roughness = 0.6;
+        mm.envMapIntensity = 0.4;
+        addCyanGlow(mm, 1.4);
         return mm;
       });
-      m.material = mats.length === 1 ? mats[0] : mats;
-      m.castShadow = true;
-      m.frustumCulled = false;
+      mesh.material = mats.length === 1 ? mats[0] : mats;
+      mesh.castShadow = true;
+      mesh.frustumCulled = false;
     });
     this.group.add(model);
     this.group.rotation.order = 'YXZ';
-    this.torso = model.getObjectByName('torso') ?? null;
-    this.hips = model.getObjectByName('hips') ?? null;
-    this.arms = model.getObjectByName('armsgun') ?? null;
-    this.muzzle = model.getObjectByName('muzzle') ?? null;
-    for (const b of [this.hips, this.torso, this.arms]) {
+
+    const depth = (o: Object3D): number => {
+      let d = 0;
+      for (let p = o.parent; p; p = p.parent) d++;
+      return d;
+    };
+    const bone = (n: string): Object3D | null => model.getObjectByName(n) ?? null;
+    model.traverse((o) => {
+      if (/^Spine\d*$/i.test(o.name)) this.spine.push(o);
+    });
+    this.spine.sort((a, b) => depth(a) - depth(b));
+    this.neck = bone('neck');
+    const arm = (side: string): Arm | null => {
+      const upper = bone(`${side}Arm`);
+      const fore = bone(`${side}ForeArm`);
+      const hand = bone(`${side}Hand`);
+      return upper && fore && hand ? { upper, fore, hand } : null;
+    };
+    this.armL = arm('Left');
+    this.armR = arm('Right');
+    for (const b of [...this.spine, this.armL?.upper, this.armL?.fore, this.armR?.upper, this.armR?.fore]) {
       if (!b) continue;
       this.poseBones.push(b);
       this.clean.push(b.quaternion.clone());
     }
+
+    if (rifleSrc) {
+      const { group: holder, muzzle } = buildAlignedGun(rifleSrc, RIFLE_LENGTH);
+      const rifle = holder.children[0];
+      rifle.position.z -= GRIP_SHIFT;
+      const mz = new Object3D();
+      mz.position.copy(muzzle);
+      mz.position.z -= GRIP_SHIFT;
+      holder.add(mz);
+      rifle.traverse((o) => {
+        const mesh = o as Mesh;
+        if (!mesh.isMesh) return;
+        const mats = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).map((orig) => {
+          const mm = (orig as MeshStandardMaterial).clone();
+          mm.metalnessMap = null;
+          mm.roughnessMap = null;
+          mm.metalness = 0.3;
+          mm.roughness = 0.55;
+          mm.envMapIntensity = 0.4;
+          return mm;
+        });
+        mesh.material = mats.length === 1 ? mats[0] : mats;
+        mesh.castShadow = true;
+        mesh.frustumCulled = false;
+      });
+      this.holder = holder;
+      this.muzzle = mz;
+      this.group.add(holder);
+    }
+
     this.mixer = new AnimationMixer(model);
-    for (const clip of clips) {
-      const isReload = clip.name === 'reload';
-      const c = clip.clone();
-      c.tracks = c.tracks.filter((t) => ARM_TRACK.test(t.name) === isReload);
-      const a = this.mixer.clipAction(c);
-      a.play();
-      a.setEffectiveWeight(0);
-      if (isReload) {
-        a.timeScale = 0; // 시간은 진행률로 직접 맞춘다
-        this.reloadAction = a;
-      } else {
-        if (clip.name === 'death') {
-          a.setLoop(LoopOnce, 1);
-          a.clampWhenFinished = true;
-        }
-        this.actions[clip.name] = a;
-        this.weights[clip.name] = clip.name === 'idle' ? 1 : 0;
+    for (const [name, clip] of Object.entries(clips)) {
+      const a = this.mixer.clipAction(clip);
+      if (name === 'death') {
+        a.setLoop(LoopOnce, 1);
+        a.clampWhenFinished = true;
+      } else a.play();
+      a.setEffectiveWeight(name === 'idle' ? 1 : 0);
+      this.actions[name] = a;
+      this.weights[name] = name === 'idle' ? 1 : 0;
+    }
+    this.crouchRest = this.findCrouchRest(model);
+    this.group.visible = false;
+  }
+
+  /** 앉아 걷기 한 주기에서 두 발이 가장 낮은(둘 다 디딘) 시각 */
+  private findCrouchRest(model: Group): number {
+    const a = this.actions.crouch;
+    const fl = model.getObjectByName('LeftFoot');
+    const fr = model.getObjectByName('RightFoot');
+    if (!a || !fl || !fr) return 0;
+    const dur = a.getClip().duration;
+    for (const k of Object.keys(this.actions)) this.actions[k].setEffectiveWeight(k === 'crouch' ? 1 : 0);
+    let best = 0;
+    let bestY = Infinity;
+    for (let i = 0; i < 40; i++) {
+      a.time = (i / 40) * dur;
+      this.mixer.update(0);
+      model.updateMatrixWorld(true);
+      const y = Math.max(fl.getWorldPosition(this.v[0]).y, fr.getWorldPosition(this.v[1]).y);
+      if (y < bestY) {
+        bestY = y;
+        best = a.time;
       }
     }
-    this.group.visible = false;
+    a.time = best;
+    for (const k of Object.keys(this.actions)) this.actions[k].setEffectiveWeight(this.weights[k]);
+    this.mixer.update(0);
+    return best;
   }
 
   reset(yaw: number): void {
     this.legsYaw = yaw + Math.PI;
-    this.deathT = -1;
     this.group.rotation.set(0, this.legsYaw, 0);
     this.reloadBlend = 0;
-    this.dying = false;
-    this.turnStep = null;
-    this.turnWait = 0;
-    this.aimRate = 0;
-    this.lastAim = this.legsYaw;
-    this.airTime = 0;
     this.sprintBlend = 0;
+    this.turning = false;
+    this.turnWait = 0;
+    this.airTime = 0;
+    this.dir = 'fwd';
+    if (this.dying) this.actions.death?.stop();
+    this.dying = false;
     for (const k of Object.keys(this.actions)) this.weights[k] = k === 'idle' ? 1 : 0;
     this.hasLast = false;
     this.vel.set(0, 0, 0);
+  }
+
+  /**
+   * Forward or backward step: the one that twists the waist less and, when that is a tie (pure sidestep), the one the legs
+   * already face. Switching between left and right then only reverses the stride instead of spinning the legs half a turn.
+   */
+  private pickDir(aimYaw: number): GaitDir {
+    let best: GaitDir = 'fwd';
+    let bestCost = Infinity;
+    for (const d of GAIT_FWD_BACK) {
+      const legs = legsYawFor(this.moveYaw, d);
+      const twist = Math.abs(wrap(aimYaw - legs));
+      const cost = twist + (twist > MAX_TWIST ? 2 : 0) + 0.5 * Math.abs(wrap(legs - this.legsYaw)) - (d === this.dir ? 0.2 : 0);
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = d;
+      }
+    }
+    return best;
   }
 
   /** 총구 월드 위치 (탄환·섬광 출발점) */
@@ -189,236 +302,223 @@ export class PlayerBody {
     this.lastPos.copy(s.pos);
     this.hasLast = true;
     const speed = Math.hypot(this.vel.x, this.vel.z);
-    // 좌우로 방향을 바꾸면 속도가 0.1초쯤 0 근처를 지난다. 그동안 대기 자세로 빠졌다 돌아오지 않게 걷는 중으로 유지한다
+    // 좌우로 방향을 바꾸면 속도가 잠깐 0 근처를 지난다. 그동안 대기 자세로 빠졌다 돌아오지 않게 걷는 중으로 유지한다
     if (speed > 0.9) {
       this.stillT = 0;
       this.moveYaw = Math.atan2(this.vel.x, this.vel.z);
     } else this.stillT += dt;
     const moving = this.stillT < 0.18;
-    const blend = !!(this.actions.strafeL && this.actions.strafeR);
-    let target = aimYaw;
+
     if (moving) {
-      const moveYaw = this.moveYaw;
-      // 전진·뒷걸음·좌우 옆걸음 중 허리 비틀림이 가장 작은 걸음을 고른다(GaitDir.ts). 옆으로 갈 때 다리는 조준 쪽을 본 채 옆걸음한다
-      const allowed = this.actions.strafeL && this.actions.strafeR ? GAIT_ALL : GAIT_FWD_BACK;
-      let dir = pickGaitDir(moveYaw, blend ? this.legsYaw : aimYaw, this.dir, allowed, blend ? 0.2 : 0.3);
+      // 전진과 뒷걸음 중 허리가 덜 비틀리는 쪽을 고른다. 다리는 가는 쪽을 본다(옆걸음 클립은 없다)
+      let dir = this.pickDir(aimYaw);
       this.dirHold -= dt;
       if (dir !== this.dir && this.dirHold > 0) dir = this.dir;
       if (dir !== this.dir) {
         this.dir = dir;
-        this.dirHold = 0.25;
+        this.dirHold = 0.1;
       }
-      // 옆걸음 클립이 있으면 다리는 조준 쪽을 보고 대각선은 두 걸음을 섞는다. 없으면 다리를 이동 방향으로 돌린다
-      target = blend ? aimYaw : legsYawFor(moveYaw, dir);
-    } else this.dir = 'fwd';
-    if (dt > 0) this.aimRate += (wrap(aimYaw - this.lastAim) / dt - this.aimRate) * Math.min(1, dt * 8);
-    this.lastAim = aimYaw;
-    // 앉아 있을 때는 발을 떼는 돌기를 쓰지 않는다(돌기 클립이 서 있는 자세라서 일어섰다 앉게 된다). 다리가 조준을 천천히 따라 돈다
-    const crouch = s.crouch && !!this.actions.crouch && !!this.actions.crouchWalk;
-    const stepTurn = !moving && s.onGround && !crouch && !!this.actions.turnL && !!this.actions.turnR;
-    if (stepTurn) {
-      // 제자리 돌기: 다리는 그대로 두고 상체만 조준을 따라가다가, 비틀림이 커지거나 비틀린 채 잠시 서 있으면 발을 떼어 한 걸음에 돈다.
-      // 다리를 조준 쪽으로 계속 돌리면 디딘 두 발이 바닥에서 돈다(GaitDir.TurnStep)
-      if (!this.turnStep) {
-        const want = wrap(aimYaw - this.legsYaw);
-        this.turnWait = Math.abs(want) > 0.25 ? this.turnWait + dt : 0;
-        if (this.weights.idle > 0.95 && (Math.abs(want) > TURN_START || this.turnWait > 0.6)) {
-          // 조준이 계속 돌고 있으면 그만큼 앞서 돈다(잔걸음이 줄어든다)
-          const lead = Math.sign(this.aimRate) === Math.sign(want) ? Math.max(-0.5, Math.min(0.5, this.aimRate * 0.25)) : 0;
-          this.turnStep = startTurnStep(this.legsYaw, want + lead, TURN_DUR);
-          this.turnWait = 0;
-        }
-      }
-      if (this.turnStep) {
-        this.turnStep.u = Math.min(1, this.turnStep.u + dt / this.turnStep.dur);
-        this.legsYaw = turnStepYaw(this.turnStep);
-      }
-    } else {
-      // 도는 중에 움직이기 시작하면 돌기 클립은 그 자세로 멈춘 채 걸음 클립과 섞이며 빠진다
-      this.turnStep = null;
-      this.turnWait = 0;
-      let d = wrap(target - this.legsYaw);
+      let d = wrap(legsYawFor(this.moveYaw, this.dir) - this.legsYaw);
       // 거의 반대로 돌 때는 조준 쪽을 지나가는 방향으로 (반대로 돌면 상체가 한 바퀴 돈다)
       if (Math.abs(d) > 2.6) {
         const side = wrap(aimYaw - this.legsYaw);
         if (Math.abs(side) > 0.2 && Math.sign(side) !== Math.sign(d)) d = Math.sign(side) * (Math.PI * 2 - Math.abs(d));
       }
-      const maxTurn = (moving ? 9 : 5) * dt;
-      this.legsYaw += Math.max(-maxTurn, Math.min(maxTurn, d));
+      this.legsYaw += clamp(d, -9 * dt, 9 * dt);
+      this.turning = false;
+      this.turnWait = 0;
+    } else {
+      // 서 있을 때: 상체가 조준을 따라가고, 비틀림이 크거나 한동안 비틀린 채 있으면 다리가 따라 돈다
+      this.dir = 'fwd';
+      const want = wrap(aimYaw - this.legsYaw);
+      this.turnWait = Math.abs(want) > 0.25 ? this.turnWait + dt : 0;
+      if (Math.abs(want) > 0.8 || this.turnWait > 0.7) this.turning = true;
+      if (this.turning) {
+        this.legsYaw += clamp(want, -6 * dt, 6 * dt);
+        if (Math.abs(want) < 0.05) this.turning = false;
+      }
     }
-    const rawTwist = wrap(aimYaw - this.legsYaw);
-    const twist = Math.max(-MAX_TWIST, Math.min(MAX_TWIST, rawTwist));
-    // 비틀림 한계를 넘으면 다리가 따라 돈다(도는 중이면 걸음의 기준도 함께 옮긴다)
-    if (this.turnStep) this.turnStep.from += rawTwist - twist;
+    const twist = clamp(wrap(aimYaw - this.legsYaw), -MAX_TWIST, MAX_TWIST);
     this.legsYaw = aimYaw - twist;
     this.group.position.copy(s.pos);
     this.group.rotation.set(0, this.legsYaw, 0);
 
-    // 클립 선택: 속도 구간(걷기·조깅·달리기 발 속도의 기하평균 경계)
-    // 걸음 종류는 '의도한 속도'로 고른다: 올라갈 때는 즉시, 내려갈 때는 초당 6m/s씩만 따라간다.
-    // 좌우로 방향을 바꾸거나 멈출 때 속도가 잠깐 떨어져도 느린 걸음 클립을 거치지 않는다
-    this.gaitSpeed = moving ? Math.max(speed, this.gaitSpeed - dt * 6) : 0;
-    const gs = this.gaitSpeed;
-    const clipFor = (dir: GaitDir): string => {
-      if (crouch) return dir === 'back' ? 'crouchBack' : dir === 'left' ? 'crouchStrafeL' : dir === 'right' ? 'crouchStrafeR' : 'crouchWalk';
-      if (dir === 'back') return 'back';
-      if (dir === 'left' || dir === 'right') {
-        const fast = gs > 3.92 * (this.gait.startsWith('strafeFast') || this.gait2.startsWith('strafeFast') ? 0.85 : 1.15);
-        return (fast ? 'strafeFast' : 'strafe') + (dir === 'left' ? 'L' : 'R');
-      }
-      return gs < 2.12 ? 'walk' : gs < 3.92 ? 'jog' : gs < 6.74 || !this.actions.sprint ? 'run' : 'sprint';
-    };
-    const rest = crouch ? 'crouch' : 'idle';
-    let name = rest;
-    let name2 = '';
-    let w2 = 0;
-    let ts1 = 1;
-    let ts2 = 1;
-    if (moving) {
-      name = clipFor(this.dir);
-      if (!this.actions[name]) name = rest;
-      else {
-        ts1 = speed / CLIP_SPEED[name];
-        // 대각선: 이동 방향이 주 걸음에서 벗어난 만큼 옆 걸음을 섞는다(GaitDir.solveGaitBlend)
-        const res = blend && speed > 0.9 ? gaitResidual(this.moveYaw, this.legsYaw, this.dir) : 0;
-        const sec = Math.abs(res) > 0.06 ? clipFor(neighborDir(this.dir, res)) : '';
-        if (sec && sec !== name && this.actions[sec]) {
-          const b = solveGaitBlend(speed, res, CLIP_SPEED[name], this.actions[name].getClip().duration, CLIP_SPEED[sec], this.actions[sec].getClip().duration);
-          name2 = sec;
-          w2 = b.w2;
-          ts1 = b.ts1;
-          ts2 = b.ts2;
-        }
-      }
-    }
-    // 공중: 달리는 동작 대신 공중 자세 (잠깐 뜨는 턱에서는 바꾸지 않는다)
+    // 어떤 클립을 얼마나 빨리: 디딘 발이 몸의 속도로 바닥을 밀게 한다
+    const crouch = s.crouch && !!this.actions.crouch;
     this.airTime = s.onGround ? 0 : this.airTime + dt;
-    if (this.airTime > 0.08 && this.actions.air) {
-      name = 'air';
-      name2 = '';
-      w2 = 0;
-    }
-    this.gait2 = name2;
-    if (!this.actions[name]) name = 'idle';
-    // Gait-to-gait: bring the incoming clip to the same stride phase as the outgoing one so the feet line up while blending.
-    if (name !== this.gait) {
-      const from = this.actions[this.gait];
-      const to = this.actions[name];
-      if (from && to && !isStill(name) && !isStill(this.gait)) {
-        const mirrored = mirroredStrafePhase(this.gait, name, from.time / from.getClip().duration);
-        if (mirrored !== null) {
-          // 좌↔우 뒤집기: 발 위치가 이어지는 위상에서 새 클립을 시작하고 가중치를 바로 넘긴다(섞는 동안 발이 미끄러지지 않게)
-          to.time = mirrored * to.getClip().duration;
-          this.weights[name] = Math.max(this.weights[name], this.weights[this.gait]);
-          this.weights[this.gait] = 0;
-        } else if (this.weights[name] < 0.05) to.time = (from.time / from.getClip().duration) * to.getClip().duration;
+    const air = this.airTime > 0.08;
+    let name = 'idle';
+    let ts = 1;
+    if (crouch) {
+      name = 'crouch';
+      ts = moving ? ((this.dir === 'back' ? -1 : 1) * speed) / (PLAYER_CLIP_SPEED.crouch * K) : 0;
+    } else if (moving || air) {
+      if (this.actions.run) {
+        name = 'run';
+        ts = ((this.dir === 'back' && !air ? -1 : 1) * speed) / (PLAYER_CLIP_SPEED.run * K);
       }
-      this.gait = name;
+      // 공중에서는 다리를 천천히 젓는다
+      if (air) ts = 0.35;
     }
+    if (!this.actions[name]) name = 'idle';
     let sum = 0;
     for (const k of Object.keys(this.actions)) {
-      const w = this.weights[k] + ((k === name ? 1 - w2 : k === name2 ? w2 : 0) - this.weights[k]) * Math.min(1, dt * 10);
-      this.weights[k] = w;
-      sum += w;
-    }
-    const st = this.turnStep;
-    if (st) {
-      // 돌기 클립은 가중치를 바로 준다: 처음·끝이 대기 자세와 같아 섞는 시간이 필요 없고, 천천히 올리면 디딘 발이 다리 회전을 따라가지 못한다
-      for (const k of Object.keys(this.actions)) this.weights[k] = k === st.clip ? st.w : k === 'idle' ? 1 - st.w : 0;
-      sum = 1;
+      this.weights[k] += ((k === name ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 10);
+      sum += this.weights[k];
     }
     for (const k of Object.keys(this.actions)) {
       const a = this.actions[k];
       a.setEffectiveWeight(this.weights[k] / (sum || 1));
-      const cs = CLIP_SPEED[k];
-      // 공중에서는 다리를 천천히 젓는다
-      const t = k === name ? ts1 : k === name2 ? ts2 : speed / (cs || 1);
-      // 재생 배율이 속도를 그대로 따라가게 한다(하한을 두면 방향을 뒤집는 순간처럼 속도가 0 근처일 때 발만 움직여 미끄러진다)
-      a.timeScale = cs ? (s.onGround ? Math.max(0.05, Math.min(2, t)) : 0.35) : k === 'turnL' || k === 'turnR' ? 0 : 1;
+      if (k === name) a.timeScale = k === 'idle' ? 1 : clamp(ts, -2.6, 2.6);
     }
-    if (st) {
-      // 돌기 클립의 시간은 걸음 진행에 직접 맞춘다
-      const a = this.actions[st.clip];
-      a.time = Math.min(0.999, st.u) * a.getClip().duration;
-      if (st.u >= 1) {
-        this.weights[st.clip] = 0;
-        this.weights.idle = 1;
-        this.turnStep = null;
-      }
+    const ca = this.actions.crouch;
+    if (ca && crouch && !moving) {
+      // 앉아서 가만히: 두 발을 디딘 자세로 모인다
+      const dur = ca.getClip().duration;
+      let d = this.crouchRest - ca.time;
+      if (d > dur / 2) d -= dur;
+      if (d < -dur / 2) d += dur;
+      ca.time = (ca.time + d * Math.min(1, dt * 8) + dur) % dur;
     }
-    // 섞는 두 걸음은 같은 보폭 위상으로 맞춘다
-    const pa = this.actions[name];
-    const sa = name2 ? this.actions[name2] : undefined;
-    if (pa && sa && !isStill(name)) sa.time = (pa.time / pa.getClip().duration) * sa.getClip().duration;
     this.reloadBlend += ((s.reload !== null ? 1 : 0) - this.reloadBlend) * Math.min(1, dt * 14);
-    if (this.reloadAction) {
-      if (s.reload !== null) this.reloadAction.time = s.reload * this.reloadAction.getClip().duration;
-      this.reloadAction.setEffectiveWeight(this.reloadBlend);
-    }
+    if (s.reload !== null) this.reloadT = s.reload;
+    this.sprintBlend += ((s.sprint ? 1 : 0) - this.sprintBlend) * Math.min(1, dt * 8);
 
-    // 믹서는 값이 그대로면 다시 쓰지 않으므로, 지난 프레임의 절차적 회전을 먼저 지운다(누적 방지)
+    // 믹서는 값이 그대로면 다시 쓰지 않으므로, 지난 프레임에 더한 회전을 먼저 지운다(누적 방지)
     for (let i = 0; i < this.poseBones.length; i++) this.poseBones[i].quaternion.copy(this.clean[i]);
     this.mixer.update(dt);
     for (let i = 0; i < this.poseBones.length; i++) this.clean[i].copy(this.poseBones[i].quaternion);
 
-    this.group.updateMatrixWorld(true);
-    if (this.torso && Math.abs(twist) > 1e-3) {
-      // Split the twist between pelvis and chest so strafing does not snap the body at one joint.
-      const part = this.hips ? twist / 2 : twist;
-      if (this.hips) {
-        this.rotateWorld(this.hips, this.q.setFromAxisAngle(UP, part));
-        this.group.updateMatrixWorld(true);
-      }
-      this.rotateWorld(this.torso, this.q.setFromAxisAngle(UP, part));
-    }
-    if (this.arms) {
-      this.group.updateMatrixWorld(true);
-      // 재장전 중에는 총을 수평 가까이 둔다
-      // 질주 중에는 총을 내린다
-      this.sprintBlend += ((s.sprint ? 1 : 0) - this.sprintBlend) * Math.min(1, dt * 8);
-      const sb = this.sprintBlend;
-      const pitch = Math.max(-0.9, Math.min(0.9, s.pitch * (1 - 0.6 * this.reloadBlend) * (1 - sb) - 0.55 * sb + s.kick * 0.05));
+    const low = this.sprintBlend;
+    const rb = this.reloadBlend;
+    const pitch = clamp(s.pitch * (1 - 0.6 * rb) * (1 - low) + s.kick * 0.05, -1.1, 1.1);
+    // 허리: 비틀림과 피치의 일부를 척추 본들에 나눠 준다
+    const n = this.spine.length;
+    const crouchW = (this.weights.crouch ?? 0) / (sum || 1);
+    if (n) {
       this.axis.set(-Math.cos(aimYaw), 0, Math.sin(aimYaw));
-      this.rotateWorld(this.arms, this.q.setFromAxisAngle(this.axis, pitch));
+      for (const b of this.spine) {
+        if (Math.abs(twist) > 1e-3) this.rotateWorld(b, this.q.setFromAxisAngle(UP, twist / n));
+        this.rotateWorld(b, this.q.setFromAxisAngle(this.axis, (pitch * 0.4 + CROUCH_STRAIGHTEN * crouchW) / n));
+      }
+    }
+    this.group.updateMatrixWorld(true);
+    this.placeRifle(twist, pitch, low, rb, s.kick);
+    this.holdRifle(low, rb);
+    this.holder?.updateMatrixWorld(true);
+  }
+
+  /**
+   * 총(그룹 기준): 카메라가 보는 곳을 향한다. 견착 때는 목에서 오른쪽·아래·앞으로 뗀 자리에 두고 두 손이 총으로 간다.
+   * 질주 때는 오른손을 따라가며 총구를 내린다.
+   */
+  private placeRifle(twist: number, pitch: number, low: number, rb: number, kick: number): void {
+    const holder = this.holder;
+    if (!holder || !this.armR) return;
+    const [hand, anchor, dir] = this.v;
+    const fx = Math.sin(twist);
+    const fz = Math.cos(twist);
+    dir.set(fx * Math.cos(pitch), Math.sin(pitch), fz * Math.cos(pitch));
+    this.group.worldToLocal(this.armR.hand.getWorldPosition(hand));
+    if (this.neck) {
+      this.group.worldToLocal(this.neck.getWorldPosition(anchor));
+      // 오른쪽 = (-fz, 0, fx)
+      anchor.x += (-fz * 0.2 + fx * 0.14) * K;
+      anchor.z += (fx * 0.2 + fz * 0.14) * K;
+      anchor.y -= (0.1 + 0.05 * rb) * K;
+      hand.lerp(anchor, 1 - low);
+    }
+    holder.position.copy(hand);
+    // 카메라 규약 lookAt: -Z가 목표 방향, up = Y → 총이 뒤집히지 않는다
+    this.m.lookAt(ZERO, dir, UP);
+    holder.quaternion.setFromRotationMatrix(this.m);
+    // 질주: 로우레디. 재장전: 총구를 조금 들고 옆으로 기울인다
+    this.e.set(-0.55 * low + 0.22 * rb, 0.4 * low + 0.12 * rb, 0.3 * low + 0.45 * rb);
+    holder.quaternion.multiply(this.q2.setFromEuler(this.e));
+    holder.translateZ(0.06 * low * K + kick * 0.03);
+    holder.translateY(-0.1 * low * K);
+    holder.updateMatrixWorld(true);
+  }
+
+  /** 두 손을 총으로. 재장전 중에는 왼손이 탄창으로 가서 빼냈다가 다시 끼운다 */
+  private holdRifle(low: number, rb: number): void {
+    const holder = this.holder;
+    if (!holder) return;
+    const target = this.v[3];
+    if (this.armR && low < 0.98) {
+      holder.localToWorld(target.copy(GRIP));
+      target.lerp(this.armR.hand.getWorldPosition(this.v[4]), low);
+      this.solveArm(this.armR, target);
+    }
+    if (this.armL) {
+      target.copy(GUARD);
+      if (rb > 0.01) {
+        const r = this.reloadT;
+        const p = this.v[4];
+        if (r < 0.2) p.lerpVectors(GUARD, MAG, smooth(r / 0.2));
+        else if (r < 0.38) p.lerpVectors(MAG, MAG_OUT, smooth((r - 0.2) / 0.18));
+        else if (r < 0.56) p.copy(MAG_OUT);
+        else if (r < 0.76) p.lerpVectors(MAG_OUT, MAG, smooth((r - 0.56) / 0.2));
+        else p.lerpVectors(MAG, GUARD, smooth((r - 0.76) / 0.24));
+        target.lerp(p, rb);
+      }
+      holder.localToWorld(target);
+      this.solveArm(this.armL, target);
     }
   }
 
-  /** 사망: 뒤로 쓰러진다. Player가 사망 상태 동안 매 스텝 호출 */
-  updateDeath(dt: number): void {
-    if (this.deathT < 0) this.deathT = 0;
-    this.turnStep = null;
-    this.deathT += dt;
-    const death = this.actions.death;
-    if (death) {
-      // 사망 클립: 무릎이 꺾이며 뒤로 쓰러져 눕는다
-      if (!this.dying) {
-        this.dying = true;
-        death.reset();
-        death.play();
-      }
-      let sum = 0;
-      for (const k of Object.keys(this.actions)) {
-        this.weights[k] += ((k === 'death' ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 12);
-        sum += this.weights[k];
-      }
-      for (const k of Object.keys(this.actions)) this.actions[k].setEffectiveWeight(this.weights[k] / (sum || 1));
-      this.reloadBlend += (0 - this.reloadBlend) * Math.min(1, dt * 12);
-      this.reloadAction?.setEffectiveWeight(this.reloadBlend);
-      for (let i = 0; i < this.poseBones.length; i++) this.poseBones[i].quaternion.copy(this.clean[i]);
-      this.mixer.update(dt);
-      for (let i = 0; i < this.poseBones.length; i++) this.clean[i].copy(this.poseBones[i].quaternion);
-      return;
+  /** 2본 IK: 손목을 target(월드)으로. 팔꿈치는 클립이 준 굽힘 평면을 유지한다 */
+  private solveArm(arm: Arm, target: Vector3): void {
+    const a = this.v[5];
+    const b = this.v[6];
+    const h = this.v[7];
+    const u = this.v[0];
+    const w = this.v[1];
+    arm.upper.getWorldPosition(a);
+    arm.fore.getWorldPosition(b);
+    arm.hand.getWorldPosition(h);
+    const l1 = a.distanceTo(b);
+    const l2 = b.distanceTo(h);
+    if (l1 < 1e-4 || l2 < 1e-4) return;
+    const d = Math.min(l1 + l2 - 0.01, Math.max(0.05, a.distanceTo(target)));
+    const want = Math.acos(clamp((l1 * l1 + l2 * l2 - d * d) / (2 * l1 * l2), -1, 1));
+    u.copy(a).sub(b).normalize();
+    w.copy(h).sub(b).normalize();
+    const have = Math.acos(clamp(u.dot(w), -1, 1));
+    this.axis.crossVectors(w, u);
+    if (this.axis.lengthSq() > 1e-8) {
+      this.rotateWorld(arm.fore, this.q.setFromAxisAngle(this.axis.normalize(), have - want));
+      arm.fore.updateMatrixWorld(true);
     }
-    // 클립이 없는 모델: 몸 전체를 통째로 뒤로 넘어뜨린다
-    const k = Math.min(1, this.deathT / 0.6);
-    const ease = k * k;
-    const bounce = k >= 1 ? Math.max(0, Math.sin(Math.min(1, (this.deathT - 0.6) / 0.25) * Math.PI)) * 0.05 : 0;
-    this.group.rotation.x = -(Math.PI / 2 - 0.08) * ease + bounce;
+    arm.hand.getWorldPosition(h);
+    u.copy(h).sub(a).normalize();
+    w.copy(target).sub(a).normalize();
+    this.rotateWorld(arm.upper, this.q.setFromUnitVectors(u, w));
+    arm.upper.updateMatrixWorld(true);
+  }
+
+  /** 사망: 쓰러지는 클립을 한 번 틀고, 총은 오른손에 남는다. Player가 사망 상태 동안 매 스텝 호출 */
+  updateDeath(dt: number): void {
+    const death = this.actions.death;
+    if (!this.dying) {
+      this.dying = true;
+      death?.reset().play();
+    }
+    const to = death ? 'death' : 'idle';
+    let sum = 0;
+    for (const k of Object.keys(this.actions)) {
+      this.weights[k] += ((k === to ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 12);
+      sum += this.weights[k];
+    }
+    for (const k of Object.keys(this.actions)) this.actions[k].setEffectiveWeight(this.weights[k] / (sum || 1));
     for (let i = 0; i < this.poseBones.length; i++) this.poseBones[i].quaternion.copy(this.clean[i]);
-    if (this.arms) {
-      this.group.updateMatrixWorld(true);
-      this.axis.set(-Math.cos(this.legsYaw), 0, Math.sin(this.legsYaw));
-      this.rotateWorld(this.arms, this.q.setFromAxisAngle(this.axis, -1.25 * ease));
+    this.mixer.update(dt);
+    for (let i = 0; i < this.poseBones.length; i++) this.clean[i].copy(this.poseBones[i].quaternion);
+    this.group.updateMatrixWorld(true);
+    if (this.holder && this.armR) {
+      this.group.worldToLocal(this.armR.hand.getWorldPosition(this.v[0]));
+      this.holder.position.lerp(this.v[0], Math.min(1, dt * 20));
+      this.holder.updateMatrixWorld(true);
     }
   }
 

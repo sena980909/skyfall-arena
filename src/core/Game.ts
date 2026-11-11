@@ -222,7 +222,7 @@ export class Game {
       else if (a.fpDetail) this.player.applyFpDetail(a.fpDetail.scene, a.fpDetail.clips);
       else if (a.fpRig) this.player.applyFpRig(a.fpRig.scene, a.fpRig.clips);
       else if (a.fpArms) this.player.applyFpArmsModel(a.fpArms);
-      if (a.playerRig) this.scene.add(this.player.applyBody(a.playerRig.scene, a.playerRig.clips));
+      if (a.player) this.scene.add(this.player.applyBody(a.player.scene, a.player.clips, a.rifle));
       this.fx.setTextures(a.vfx);
       this.fx.setModels(a.fxModels);
       this.warmupShaders(a);
