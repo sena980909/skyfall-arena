@@ -41,7 +41,7 @@ export interface LoadedAssets {
   fpRig: { scene: Group; clips: AnimationClip[] } | null;
   /** 힉스필드 상세 모델(파란색)의 팔·총만 잘라낸 1인칭 모델. 눈이 원점. 있으면 fpRig 대신 쓴다 */
   fpDetail: { scene: Group; clips: AnimationClip[] } | null;
-  /** 힉스필드에서 받은 1인칭 모델(총, 탄창, 리깅된 몸). 셋 다 있으면 fpDetail 대신 쓴다(render/FpDirect.ts) */
+  /** 힉스필드에서 받은 그대로의 1인칭 모델(두 팔이 총을 쥔 한 덩어리). 있으면 fpDetail 대신 쓴다(render/FpDirect.ts) */
   fpDirect: FpDirectParts | null;
   /** 힉스필드에서 받은 이펙트 모델(총구 화염, 탄, 피격 섬광) */
   fxModels: FxModels;
@@ -217,19 +217,19 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const [fpGun, fpMag, fpBody] = await Promise.all(['fp_gun', 'fp_mag', 'fp_body'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
+  const fpHeld = await loadGltf(gl, BASE + 'models/fp_held.glb');
   const fxGltfs = await Promise.all(['fx_flash', 'fx_bolt', 'fx_impact'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
   const fxModels: FxModels = { flash: fxGltfs[0]?.scene ?? null, bolt: fxGltfs[1]?.scene ?? null, impact: fxGltfs[2]?.scene ?? null };
-  const fpParts = fpGun && fpMag && fpBody ? { gun: fpGun.scene, mag: fpMag.scene, body: fpBody.scene } : null;
+  const fpDirect = fpHeld ? { held: fpHeld.scene } : null;
   const [fpDetailGltf, botRigGltf, ...kitGltfs] = await Promise.all([
-    fpParts ? Promise.resolve(null) : loadGltf(gl, BASE + 'models/fp_detail.glb'),
+    fpDirect ? Promise.resolve(null) : loadGltf(gl, BASE + 'models/fp_detail.glb'),
     // 적의 몸은 힉스필드 리깅 모델(enemy.glb + 동작 클립)을 쓴다. Blender 리그(bot_rig.glb)는 없앤다
     Promise.resolve(null as GLTF | null),
     // 맵 소품: 힉스필드에서 받은 모델을 하나씩 그대로 불러 모듈 묶음을 만든다(world/KitDirect.ts)
     ...KIT_FILES.map((n) => loadGltf(gl, BASE + `models/kit/${n}.glb`)),
   ]);
   // 직접 만든 1인칭 리그는 상세 1인칭 모델이 없을 때만 내려받는다
-  const fpRigGltf = fpDetailGltf || fpParts ? null : await loadGltf(gl, BASE + 'models/fp_rig.glb');
+  const fpRigGltf = fpDetailGltf || fpDirect ? null : await loadGltf(gl, BASE + 'models/fp_rig.glb');
   // 이전 방식 에셋(이미지→3D 캐릭터·라이브러리 클립·라이플)은 새 봇 리그가 없을 때만 내려받는다
   const [ravenBase, rifleGltf, ...clipGltfs] = botRigGltf
     ? [null, null]
@@ -267,7 +267,7 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   const rifle = rifleGltf ? rifleGltf.scene : null;
   rifle?.traverse((o) => (o.castShadow = true));
   // 이전 방식(이미지→3D 덩어리 메시)은 새 리그가 없을 때만 내려받는다
-  const fpArmsGltf = fpRigGltf || fpDetailGltf || fpParts ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
+  const fpArmsGltf = fpRigGltf || fpDetailGltf || fpDirect ? null : await loadGltf(gl, BASE + 'models/fp_arms.glb');
   const fpArms = fpArmsGltf ? fpArmsGltf.scene : null;
 
   const fpRig = fpRigGltf ? { scene: fpRigGltf.scene, clips: fpRigGltf.animations } : null;
@@ -290,7 +290,6 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
     });
     player = { scene: playerBase.scene, clips };
   }
-  const fpDirect = fpParts;
   const kitModels = Object.fromEntries(KIT_FILES.map((n, i) => [n, kitGltfs[i]?.scene ?? null]));
   const mapKit = kitGltfs.some((k) => k) ? buildKit(kitModels) : null;
   const [dPanel, dPanelDark, dSuit, dWorn] = await Promise.all([

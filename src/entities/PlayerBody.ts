@@ -59,7 +59,7 @@ const smooth = (t: number): number => {
 };
 
 /** 생성 모델에는 발광 그림이 없다: 겉그림의 청록 불빛(바이저·띠)만 빛나게 한다 */
-export function addCyanGlow(mat: MeshStandardMaterial, strength: number): void {
+function addCyanGlow(mat: MeshStandardMaterial, strength: number): void {
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uGlow = { value: strength };
     sh.fragmentShader = sh.fragmentShader
