@@ -321,7 +321,7 @@ export class Player implements Hittable, Healable {
   }
 
   /**
-   * 힉스필드에서 받은 1인칭 모델(두 팔이 총을 쥔 한 덩어리)을 그대로 붙인다(Blender를 거치지 않는다). 자리와 재장전 움직임은 FpDirect가 정한다.
+   * 힉스필드에서 받은 1인칭 모델(총, 탄창, 리깅된 몸의 두 팔)을 붙인다(Blender를 거치지 않는다). 자리와 팔·재장전 움직임은 FpDirect가 정한다.
    * 뷰모델 전체의 흔들림·반동·달리기 자세는 animateViewmodel이 그대로 맡는다.
    */
   applyFpDirect(parts: FpDirectParts): void {
