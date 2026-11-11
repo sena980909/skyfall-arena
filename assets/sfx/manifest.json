@@ -1,0 +1,58 @@
+{
+ "shoot": "shoot.mp3",
+ "shoot_far": "shoot_far.mp3",
+ "empty": "empty.mp3",
+ "jump": "jump.mp3",
+ "dash": "dash.mp3",
+ "flashbang": "flashbang.mp3",
+ "ult_activate": "ult_activate.mp3",
+ "heal": "heal.mp3",
+ "wave_start": "wave_start.mp3",
+ "wave_clear": "wave_clear.mp3",
+ "death": "death.mp3",
+ "bot_death": "bot_death.mp3",
+ "footstep": [
+  {
+   "file": "footstep_1.mp3",
+   "from": 0.62,
+   "to": 0.98
+  },
+  {
+   "file": "footstep_2.mp3",
+   "from": 0.44,
+   "to": 0.8
+  },
+  {
+   "file": "footstep_3.mp3",
+   "from": 0.67,
+   "to": 1.02
+  },
+  {
+   "file": "footstep_4.mp3",
+   "from": 0.28,
+   "to": 0.56
+  }
+ ],
+ "land": [
+  {
+   "file": "land_1.mp3",
+   "from": 0.6,
+   "to": 1.02
+  },
+  {
+   "file": "land_2.mp3",
+   "from": 0.43,
+   "to": 1.02
+  }
+ ],
+ "reload_out": {
+  "file": "reload_out.mp3",
+  "from": 0.13,
+  "to": 0.3
+ },
+ "reload_in": {
+  "file": "reload_in.mp3",
+  "from": 0.44,
+  "to": 0.86
+ }
+}
