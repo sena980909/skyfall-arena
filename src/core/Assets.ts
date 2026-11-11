@@ -41,7 +41,7 @@ export interface LoadedAssets {
   fpRig: { scene: Group; clips: AnimationClip[] } | null;
   /** 힉스필드 상세 모델(파란색)의 팔·총만 잘라낸 1인칭 모델. 눈이 원점. 있으면 fpRig 대신 쓴다 */
   fpDetail: { scene: Group; clips: AnimationClip[] } | null;
-  /** 힉스필드에서 받은 그대로의 1인칭 모델(총, 탄창, 팔). 셋 다 있으면 fpDetail 대신 쓴다(render/FpDirect.ts) */
+  /** 힉스필드에서 받은 그대로의 1인칭 모델(두 팔이 총을 쥔 한 덩어리). 있으면 fpDetail 대신 쓴다(render/FpDirect.ts) */
   fpDirect: FpDirectParts | null;
   /** 힉스필드에서 받은 이펙트 모델(총구 화염, 탄, 피격 섬광) */
   fxModels: FxModels;
@@ -217,10 +217,10 @@ export async function loadAssets(onProgress?: (msg: string) => void): Promise<Lo
   for (const t of [muzzle, bolt, impact, flashBurst]) if (t) t.anisotropy = 1;
 
   onProgress?.('모델 로딩');
-  const fpParts = await Promise.all(['fp_gun', 'fp_mag', 'fp_arm'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
+  const fpHeld = await loadGltf(gl, BASE + 'models/fp_held.glb');
   const fxGltfs = await Promise.all(['fx_flash', 'fx_bolt', 'fx_impact'].map((n) => loadGltf(gl, BASE + `models/${n}.glb`)));
   const fxModels: FxModels = { flash: fxGltfs[0]?.scene ?? null, bolt: fxGltfs[1]?.scene ?? null, impact: fxGltfs[2]?.scene ?? null };
-  const fpDirect = fpParts[0] && fpParts[1] && fpParts[2] ? { gun: fpParts[0].scene, mag: fpParts[1].scene, arm: fpParts[2].scene } : null;
+  const fpDirect = fpHeld ? { held: fpHeld.scene } : null;
   const [fpDetailGltf, botRigGltf, ...kitGltfs] = await Promise.all([
     fpDirect ? Promise.resolve(null) : loadGltf(gl, BASE + 'models/fp_detail.glb'),
     // 적의 몸은 힉스필드 리깅 모델(enemy.glb + 동작 클립)을 쓴다. Blender 리그(bot_rig.glb)는 없앤다

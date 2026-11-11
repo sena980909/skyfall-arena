@@ -1,5 +1,5 @@
 import {
-  AdditiveBlending, BoxGeometry, CylinderGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, TorusGeometry, Vector3,
+  AdditiveBlending, BoxGeometry, CylinderGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, type SkinnedMesh, TorusGeometry, Vector3,
 } from 'three';
 import { Bot, type BotOptions } from '@/entities/Bot';
 import type { GameContext } from '@/core/Context';
@@ -60,6 +60,9 @@ const PAD_ENTRY = new Vector3(0, 0, -24);
 const BEACON_POS = new Vector3(0, 0, -95);
 const EXTRACT_POS = new Vector3(0, 0, 26);
 const INTERACT_RADIUS = 2.6;
+/** 쓰러진 적이 바닥에 남아 있는 시간(초). 그 뒤 CORPSE_SINK초 동안 바닥 아래로 가라앉고 장면에서 빠진다 */
+const CORPSE_STAY = 10;
+const CORPSE_SINK = 2;
 const RELAY_HOLD = 2.5;
 const UNLOCK_HOLD = 3.0;
 const UPLINK_HOLD = 2.0;
@@ -146,6 +149,8 @@ export class Mission {
   private waveCount = 0;
   private spawnQueue: { at: number; name: string; opts: BotOptions; pos?: Vector3 }[] = [];
   private readonly deadAt = new Map<Bot, number>();
+  /** 목록에서 빠진 뒤에도 바닥에 누워 있는 적. 두면 한 판에 스무 구 넘게 쌓이고 다시 시작해도 남는다 */
+  private corpses: { bot: Bot; at: number; y: number }[] = [];
   private boss: Bot | null = null;
   /** 무전 대사 대기열. 시뮬레이션 시간으로 흐른다(일시정지하면 대사도 멈춘다) */
   private lines: { who: string; text: string; hint: boolean }[] = [];
@@ -392,6 +397,8 @@ export class Mission {
     this.beaconLight?.emissive.setHex(RED);
     this.spawnQueue = [];
     this.deadAt.clear();
+    for (const c of this.corpses) this.removeCorpse(c.bot);
+    this.corpses = [];
     this.boss = null;
     this.botCounter = 0;
     this.waveCount = 0;
@@ -592,8 +599,27 @@ export class Mission {
         this.ctx.scene.remove(b.debugLine);
         bots.splice(i, 1);
         this.deadAt.delete(b);
+        this.corpses.push({ bot: b, at: now, y: b.group.position.y });
       }
     }
+    for (let i = this.corpses.length - 1; i >= 0; i--) {
+      const c = this.corpses[i];
+      const over = now - c.at - CORPSE_STAY;
+      if (over <= 0) continue;
+      if (over < CORPSE_SINK) c.bot.group.position.y = c.y - (over / CORPSE_SINK) * 0.9;
+      else {
+        this.removeCorpse(c.bot);
+        this.corpses.splice(i, 1);
+      }
+    }
+  }
+
+  private removeCorpse(bot: Bot): void {
+    this.ctx.scene.remove(bot.group);
+    bot.group.traverse((o) => {
+      const sk = (o as SkinnedMesh).skeleton;
+      if (sk) sk.dispose();
+    });
   }
 
   // ---------- 진행 ----------
