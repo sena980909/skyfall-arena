@@ -37,6 +37,11 @@ export const FP_DIRECT = {
   cant: { pos: [-0.06, 0.07, -0.02], rot: [0.3, -0.05, -1.0] } as Pose,
   /** 오른손: 손잡이를 쥔 자세(총 공간). 왼팔 모델을 좌우로 뒤집어 쓴다 */
   armGripR: { pos: [0, -0.1, 0.07], rot: [0, -1.25, -0.25] } as Pose,
+  /**
+   * Draw the arms. The generated arm is a forearm that ends in a flat cut, and that end floated in view with nothing behind
+   * it. Hidden, the gun is shown alone and the magazine still travels the same path on a reload (out, down, back in).
+   */
+  showArms: false,
 };
 
 const smooth = (a: number, b: number, x: number): number => {
@@ -210,6 +215,8 @@ export class FpDirect {
       inner.scale.set(mirror, 1, 1);
     }
     this.poseMatrix(c.armGripR, this.m1).decompose(this.armR.position, this.armR.quaternion, this.s1);
+    this.armL.visible = c.showArms;
+    this.armR.visible = c.showArms;
     this.armReady = false;
   }
 
