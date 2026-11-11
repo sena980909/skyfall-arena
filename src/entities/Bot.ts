@@ -585,6 +585,9 @@ export class Bot implements Hittable, Healable {
       m.castShadow = true;
     });
     this.rifleHolder = holder;
+    // 옆으로 누웠을 때(오른쪽 면이 바닥) 홀더 원점이 바닥에서 뜨는 높이 = 총의 오른쪽 반 두께
+    holder.updateMatrixWorld(true);
+    this.rifleRest = Math.max(0.02, new Box3().setFromObject(holder).max.x) + 0.005;
     this.group.add(holder);
     this.updateRifleTransform();
   }
@@ -1109,6 +1112,15 @@ export class Bot implements Hittable, Healable {
     }
   }
 
+  /** 누운 총의 홀더 원점 높이(attachRifle이 총 두께에서 잰다) */
+  private rifleRest = 0.04;
+  /**
+   * 죽을 때 놓친 총. 총은 그룹에 달려 있어서 그대로 두면 몸이 쓰러진 뒤에도 가슴 높이에 떠 있다.
+   * 죽는 순간의 자리에서 떨어져 바닥에 옆으로 눕는다(좌표는 그룹 기준: 그룹은 발밑이 원점이고 Y축으로만 돈다).
+   */
+  private gunDrop: { vy: number; y0: number; vx: number; vz: number; from: Quaternion; to: Quaternion; bounced: boolean } | null = null;
+  private static readonly GUN_GRAVITY = 14;
+
   /** 사망 넘어짐 상태 (생성 death 클립은 쓰러지지 않아 절차적으로 넘어뜨린다) */
   private fallT = -1;
   /** 사망 클립으로 쓰러지는 중(없으면 몸 전체를 통째로 넘어뜨린다) */
@@ -1149,12 +1161,58 @@ export class Bot implements Hittable, Healable {
       // 사망 클립: 무릎이 꺾이며 뒤로 쓰러져 눕는다. 다리가 향한 쪽의 반대로 넘어진다
       this.deathClip = true;
       this.playAnim('death', 0.1, true);
+      this.startGunDrop();
     } else if (this.mixer && this.actions.idle) this.playAnim('idle', 0.12, true); // 이전 방식: 중립 자세로 굳힌 뒤 통째로 넘어뜨린다
     this.ctx.onBotKilled(this, headshot);
   }
 
+  /** 총을 놓친다: 지금 자리에서 조금 앞으로 밀리며 떨어지고, 총열이 수평이 되게 옆으로 눕는다 */
+  private startGunDrop(): void {
+    const holder = this.rifleHolder;
+    if (!holder) return;
+    // 총열 방향(-Z)을 수평으로 눕힌 것이 누운 자세의 방향이다
+    this.tmp.set(0, 0, -1).applyQuaternion(holder.quaternion);
+    this.tmp.y = 0;
+    if (this.tmp.lengthSq() < 1e-4) this.tmp.set(0, 0, -1);
+    this.tmp.normalize();
+    this.tmpM.lookAt(Bot.ZERO, this.tmp, Bot.UP);
+    const to = new Quaternion().setFromRotationMatrix(this.tmpM);
+    // 왼쪽 면이 위로 오게 총열 축으로 90도 굴린다
+    to.multiply(this.tmpQ.setFromAxisAngle(Bot.FWD, -Math.PI / 2));
+    this.gunDrop = { vy: 0.6, y0: holder.position.y, vx: this.tmp.x * 0.5, vz: this.tmp.z * 0.5, from: holder.quaternion.clone(), to, bounced: false };
+  }
+
+  private updateGunDrop(dt: number): void {
+    const d = this.gunDrop;
+    const holder = this.rifleHolder;
+    if (!d || !holder) return;
+    const rest = this.rifleRest;
+    d.vy -= Bot.GUN_GRAVITY * dt;
+    holder.position.x += d.vx * dt;
+    holder.position.z += d.vz * dt;
+    holder.position.y += d.vy * dt;
+    if (holder.position.y <= rest) {
+      holder.position.y = rest;
+      if (!d.bounced && d.vy < -1.5) {
+        // 한 번 낮게 튄다
+        d.bounced = true;
+        d.vy = -d.vy * 0.22;
+        d.vx *= 0.4;
+        d.vz *= 0.4;
+      } else {
+        holder.quaternion.copy(d.to);
+        this.gunDrop = null;
+        return;
+      }
+    }
+    // 떨어진 높이만큼 누운 자세로 돌아간다(튄 뒤에는 이미 누워 있다)
+    const k = d.bounced ? 1 : Math.min(1, Math.max(0, (d.y0 - holder.position.y) / Math.max(0.05, d.y0 - rest)));
+    holder.quaternion.copy(d.from).slerp(d.to, k * k * (3 - 2 * k));
+  }
+
   /** 넘어짐: 가속 회전(나무 쓰러지듯) → 바닥에 눕고 → 잠시 뒤 디졸브 */
   private updateDeath(dt: number): void {
+    this.updateGunDrop(dt);
     if (this.fallT < 0) return;
     this.fallT += dt;
     if (this.deathClip) {
