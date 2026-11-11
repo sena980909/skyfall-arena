@@ -22,6 +22,9 @@ const GUARD = new Vector3(0, -0.03, -0.3).multiplyScalar(K);
 const MAG = new Vector3(0, -0.13, -0.07).multiplyScalar(K);
 const MAG_OUT = new Vector3(-0.06, -0.38, -0.02).multiplyScalar(K);
 const CROUCH_STRAIGHTEN = 0.4;
+/** The falling clip is a deep tuck: mix it with the standing pose and lift the chest so a hop reads as a hop */
+const AIR_MIX = 0.55;
+const AIR_STRAIGHTEN = 0.5;
 const UP = new Vector3(0, 1, 0);
 const ZERO = new Vector3(0, 0, 0);
 
@@ -352,6 +355,8 @@ export class PlayerBody {
     if (crouch) {
       name = 'crouch';
       ts = moving ? ((this.dir === 'back' ? -1 : 1) * speed) / (PLAYER_CLIP_SPEED.crouch * K) : 0;
+    } else if (air && this.actions.air) {
+      name = 'air';
     } else if (moving || air) {
       if (this.actions.run) {
         name = 'run';
@@ -363,7 +368,8 @@ export class PlayerBody {
     if (!this.actions[name]) name = 'idle';
     let sum = 0;
     for (const k of Object.keys(this.actions)) {
-      this.weights[k] += ((k === name ? 1 : 0) - this.weights[k]) * Math.min(1, dt * 10);
+      const want = name === 'air' ? (k === 'air' ? AIR_MIX : k === 'idle' ? 1 - AIR_MIX : 0) : k === name ? 1 : 0;
+      this.weights[k] += (want - this.weights[k]) * Math.min(1, dt * 10);
       sum += this.weights[k];
     }
     for (const k of Object.keys(this.actions)) {
@@ -395,11 +401,12 @@ export class PlayerBody {
     // 허리: 비틀림과 피치의 일부를 척추 본들에 나눠 준다
     const n = this.spine.length;
     const crouchW = (this.weights.crouch ?? 0) / (sum || 1);
+    const airW = (this.weights.air ?? 0) / (sum || 1);
     if (n) {
       this.axis.set(-Math.cos(aimYaw), 0, Math.sin(aimYaw));
       for (const b of this.spine) {
         if (Math.abs(twist) > 1e-3) this.rotateWorld(b, this.q.setFromAxisAngle(UP, twist / n));
-        this.rotateWorld(b, this.q.setFromAxisAngle(this.axis, (pitch * 0.4 + CROUCH_STRAIGHTEN * crouchW) / n));
+        this.rotateWorld(b, this.q.setFromAxisAngle(this.axis, (pitch * 0.4 + CROUCH_STRAIGHTEN * crouchW + AIR_STRAIGHTEN * airW) / n));
       }
     }
     this.group.updateMatrixWorld(true);

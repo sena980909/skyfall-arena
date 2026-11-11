@@ -71,6 +71,7 @@ export const PLAYER_CLIPS: Record<string, string> = {
   idle: 'models/player_idle.glb',
   run: 'models/player_run.glb',
   crouch: 'models/player_crouch.glb',
+  air: 'models/player_air.glb',
   death: 'models/player_death.glb',
 };
 
